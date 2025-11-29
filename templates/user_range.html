@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Диапазон {{ rng.start }}–{{ rng.end }}{% endblock %}
+{% block content %}
+<div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+    <div>
+        <h2 style="margin-bottom:4px;">Диапазон {{ rng.start }}–{{ rng.end }}</h2>
+        <p style="margin-bottom:0;">Управление ботами внутри этого диапазона.</p>
+    </div>
+    <div>
+        <a class="btn btn-secondary" href="{{ url_for('user_dashboard') }}">
+            ← Назад к диапазонам
+        </a>
+    </div>
+</div>
+
+<div style="margin-top:18px;">
+    <div class="tabs">
+        <a href="{{ url_for('user_range', range_id=rng.id, tab='settings') }}"
+           class="{% if tab == 'settings' %}active{% endif %}">
+            Настройка
+        </a>
+        <a href="{{ url_for('user_range', range_id=rng.id, tab='autologin') }}"
+           class="{% if tab == 'autologin' %}active{% endif %}">
+            Автовходы
+        </a>
+        <a href="{{ url_for('user_range', range_id=rng.id, tab='logs') }}"
+           class="{% if tab == 'logs' %}active{% endif %}">
+            Логи
+        </a>
+    </div>
+</div>
+
+<div style="margin-top:18px;">
+    {% if tab == 'settings' %}
+        <h3>Настройка</h3>
+        <p>Тут позже будут настройки для диапазона {{ rng.start }}–{{ rng.end }}.</p>
+
+    {% elif tab == 'autologin' %}
+        <h3>Автовходы</h3>
+        <p>
+            Вставь логины в формате
+            <code>login:password</code> или
+            <code>login:password:mail:password</code>,
+            по одной строке на аккаунт.
+        </p>
+        <p>
+            Первая строка пойдёт в {{ rng.start }}, вторая — в {{ rng.start + 1 }},
+            и так далее до {{ rng.end }}.
+        </p>
+
+        <form method="post"
+              action="{{ url_for('user_range_autologin_start', range_id=rng.id) }}"
+              style="margin-top:12px;">
+            <div>
+                <textarea name="accounts" rows="10"
+                          style="width:100%; resize:vertical;
+                                 padding:10px 12px;
+                                 border-radius: 12px;
+                                 border: 1px solid rgba(255,255,255,0.07);
+                                 background: rgba(15, 20, 30, 0.9);
+                                 color:#f3f3f3;
+                                 font-family: monospace;
+                                 font-size: 13px;"></textarea>
+            </div>
+            <div style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap;">
+                <button class="btn" type="submit">Запустить автовходы</button>
+            </div>
+        </form>
+
+    {% elif tab == 'logs' %}
+        <h3>Логи</h3>
+        <p>Тут позже выведем логи и статусы задач автологина по диапазону.</p>
+    {% endif %}
+</div>
+{% endblock %}

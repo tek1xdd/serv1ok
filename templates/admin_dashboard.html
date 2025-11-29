@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Админка{% endblock %}
+{% block content %}
+<h2>Админка — пользователи</h2>
+<p><a class="btn" href="{{ url_for('admin_create_user') }}">+ Новый пользователь</a></p>
+
+<table>
+    <tr>
+        <th>ID</th>
+        <th>Логин</th>
+        <th>Роль</th>
+        <th>Диапазоны</th>
+        <th></th>
+    </tr>
+    {% for u in users %}
+    <tr>
+        <td>{{ u.id }}</td>
+        <td>{{ u.username }}</td>
+        <td>{% if u.is_admin %}Админ{% else %}Юзер{% endif %}</td>
+        <td>
+            {% for r in u.ranges %}
+                {{ r.start }}–{{ r.end }}{% if not loop.last %}, {% endif %}
+            {% endfor %}
+        </td>
+        <td>
+            <a href="{{ url_for('admin_edit_user', user_id=u.id) }}">Редактировать</a> |
+            <a href="{{ url_for('admin_user_ranges', user_id=u.id) }}">Диапазоны</a>
+        </td>
+    </tr>
+    {% endfor %}
+</table>
+{% endblock %}

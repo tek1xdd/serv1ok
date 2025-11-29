@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% if user %}
+  {% set title_text = "Редактирование пользователя" %}
+{% else %}
+  {% set title_text = "Новый пользователь" %}
+{% endif %}
+{% block title %}{{ title_text }}{% endblock %}
+{% block content %}
+<h2>{{ title_text }}</h2>
+
+<form method="post" style="max-width: 420px; margin-top:14px;">
+    <div>
+        <label>Логин</label><br>
+        <input type="text" name="username" value="{{ user.username if user }}">
+    </div>
+    <div style="margin-top:10px;">
+        <label>Пароль</label><br>
+        <input type="password" name="password">
+        {% if user %}
+            <div style="font-size:12px;opacity:.7;margin-top:2px;">
+                Оставь пустым, если не хочешь менять.
+            </div>
+        {% endif %}
+    </div>
+    <div style="margin-top:10px;">
+        <label>
+            <input type="checkbox" name="is_admin"
+                   {% if user and user.is_admin %}checked{% endif %}>
+            Администратор
+        </label>
+    </div>
+    <div style="margin-top:14px;">
+        <button class="btn" type="submit">Сохранить</button>
+        <a class="btn btn-secondary" href="{{ url_for('admin_dashboard') }}">Отмена</a>
+    </div>
+</form>
+{% endblock %}
