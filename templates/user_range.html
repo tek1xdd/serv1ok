@@ -32,8 +32,22 @@
 
 <div style="margin-top:18px;">
     {% if tab == 'settings' %}
-        <h3>Настройка</h3>
-        <p>Тут позже будут настройки для диапазона {{ rng.start }}–{{ rng.end }}.</p>
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+            <div>
+                <h3>Настройка</h3>
+                <p>Быстрые действия для всех ботов в диапазоне {{ rng.start }}–{{ rng.end }}.</p>
+            </div>
+            <form method="post"
+                  action="{{ url_for('user_range_command', range_id=rng.id) }}"
+                  style="display:flex; gap:8px; flex-wrap:wrap;">
+                <button class="btn" type="submit" name="action" value="novokek">
+                    Новокек (750 MMR)
+                </button>
+                <button class="btn btn-secondary" type="submit" name="action" value="played">
+                    Я играл (1600 MMR)
+                </button>
+            </form>
+        </div>
 
     {% elif tab == 'autologin' %}
         <h3>Автовходы</h3>

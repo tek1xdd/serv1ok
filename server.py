@@ -46,6 +46,12 @@ class NumberRange(db.Model):
         lazy=True,
         cascade="all, delete-orphan",
     )
+    commands = db.relationship(
+        "RangeCommand",
+        backref="range",
+        lazy=True,
+        cascade="all, delete-orphan",
+    )
 
 
 class AutoLoginJob(db.Model):
@@ -67,6 +73,16 @@ class AutoLoginLog(db.Model):
     range_id = db.Column(db.Integer, db.ForeignKey("number_range.id"), nullable=False)
     number = db.Column(db.Integer, nullable=False)  # номер бота
     message = db.Column(db.String(500), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class RangeCommand(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    range_id = db.Column(db.Integer, db.ForeignKey("number_range.id"), nullable=False)
+    number = db.Column(db.Integer, nullable=False)     # номер бота
+    action = db.Column(db.String(50), nullable=False)  # "novokek" / "played"
+    status = db.Column(db.String(32), default="pending")  # pending / taken / done / error
+    error_message = db.Column(db.String(500))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
@@ -332,7 +348,39 @@ def user_range_autologin_start(range_id):
     return redirect(url_for("user_range", range_id=range_id, tab="autologin"))
 
 
-# ====== API ДЛЯ КЛИЕНТОВ НА ВИРТАХ ======
+@app.route("/range/<int:range_id>/command", methods=["POST"])
+@login_required
+def user_range_command(range_id):
+    """Кнопки 'Новокек' / 'Я играл' во вкладке Настройка."""
+    user = current_user()
+    rng = NumberRange.query.get_or_404(range_id)
+
+    if rng.user_id != user.id:
+        flash("У вас нет прав на этот диапазон.", "danger")
+        return redirect(url_for("user_dashboard"))
+
+    action = request.form.get("action")
+    if action not in ("novokek", "played"):
+        flash("Неизвестное действие.", "danger")
+        return redirect(url_for("user_range", range_id=range_id, tab="settings"))
+
+    for num in range(rng.start, rng.end + 1):
+        cmd = RangeCommand(
+            range_id=rng.id,
+            number=num,
+            action=action,
+            status="pending",
+        )
+        db.session.add(cmd)
+
+    db.session.commit()
+
+    human = "Новокек (750 MMR)" if action == "novokek" else "Я играл (1600 MMR)"
+    flash(f"Команда «{human}» отправлена на ботов диапазона.", "success")
+    return redirect(url_for("user_range", range_id=range_id, tab="settings"))
+
+
+# ====== API ДЛЯ АВТОВХОДА ======
 @app.route("/api/autologin/next", methods=["POST"])
 def api_autologin_next():
     """Клиент (вирта) запрашивает задачу по своему номеру."""
@@ -402,7 +450,6 @@ def api_autologin_log():
     if number is None or not message:
         return jsonify({"ok": False, "error": "number and message required"}), 400
 
-    # ищем диапазон, к которому относится этот номер
     rng = (
         NumberRange.query
         .filter(NumberRange.start <= int(number), NumberRange.end >= int(number))
@@ -419,6 +466,56 @@ def api_autologin_log():
     db.session.add(log_row)
     db.session.commit()
 
+    return jsonify({"ok": True})
+
+
+# ====== API ДЛЯ КОМАНД (Новокек / Я играл) ======
+@app.route("/api/command/next", methods=["POST"])
+def api_command_next():
+    data = request.get_json(force=True, silent=True) or {}
+    number = data.get("number")
+
+    if number is None:
+        return jsonify({"ok": False, "error": "number required"}), 400
+
+    cmd = (
+        RangeCommand.query
+        .filter_by(number=number, status="pending")
+        .order_by(RangeCommand.id)
+        .first()
+    )
+    if not cmd:
+        return jsonify({"ok": True, "command": None})
+
+    cmd.status = "taken"
+    db.session.commit()
+
+    return jsonify({
+        "ok": True,
+        "command": {
+            "id": cmd.id,
+            "action": cmd.action,
+        }
+    })
+
+
+@app.route("/api/command/result", methods=["POST"])
+def api_command_result():
+    data = request.get_json(force=True, silent=True) or {}
+    cmd_id = data.get("id")
+    status = data.get("status")
+    message = data.get("message", "")
+
+    if not cmd_id or status not in ("done", "error"):
+        return jsonify({"ok": False, "error": "bad payload"}), 400
+
+    cmd = RangeCommand.query.get(cmd_id)
+    if not cmd:
+        return jsonify({"ok": False, "error": "command not found"}), 404
+
+    cmd.status = status
+    cmd.error_message = message[:500]
+    db.session.commit()
     return jsonify({"ok": True})
 
 
