@@ -375,7 +375,7 @@ def user_range_autologin_start(range_id):
 @app.route("/range/<int:range_id>/command", methods=["POST"])
 @login_required
 def user_range_command(range_id):
-    """Кнопки 'Новокек' / 'Я играл' во вкладке Настройка."""
+    """Кнопки 'Новичок' / 'Я уже играл' / 'Автонастройка' во вкладке Настройка."""
     user = current_user()
     rng = NumberRange.query.get_or_404(range_id)
 
@@ -384,7 +384,14 @@ def user_range_command(range_id):
         return redirect(url_for("user_dashboard"))
 
     action = request.form.get("action")
-    if action not in ("novokek", "played"):
+
+    labels = {
+        "novokek": "Новичок (750 MMR)",
+        "played": "Я уже играл (1600 MMR)",
+        "autoconfig": "Автонастройка",
+    }
+
+    if action not in labels:
         flash("Неизвестное действие.", "danger")
         return redirect(url_for("user_range", range_id=range_id, tab="settings"))
 
@@ -399,8 +406,7 @@ def user_range_command(range_id):
 
     db.session.commit()
 
-    human = "Новокек (750 MMR)" if action == "novokek" else "Я играл (1600 MMR)"
-    flash(f"Команда «{human}» отправлена на ботов диапазона.", "success")
+    flash(f"Команда «{labels[action]}» отправлена на ботов диапазона.", "success")
     return redirect(url_for("user_range", range_id=range_id, tab="settings"))
 
 
