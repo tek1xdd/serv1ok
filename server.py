@@ -394,7 +394,7 @@ def user_range_autologin_start(range_id):
 @app.route("/range/<int:range_id>/command", methods=["POST"])
 @login_required
 def user_range_command(range_id):
-    """Кнопки 'Запуск бота' / 'Новичок' / 'Я уже играл' / 'Автонастройка'."""
+    """Кнопки 'Запуск бота' / 'Остановить бота' / 'Новичок' / 'Я уже играл' / 'Автонастройка'."""
     user = current_user()
     rng = NumberRange.query.get_or_404(range_id)
 
@@ -406,6 +406,7 @@ def user_range_command(range_id):
 
     labels = {
         "startbot": "Запуск бота",
+        "stopbot": "Остановить бота",
         "novokek": "Новичок (750 MMR)",
         "played": "Я уже играл (1600 MMR)",
         "autoconfig": "Автонастройка",

@@ -45,15 +45,19 @@
                 <div>
                     <h3>Запуск бота</h3>
                     <p style="margin-top:4px; margin-bottom:0;">
-                        И пошла жара в пляс. МАНИМАНИМАНИМАНИ. ДЕНЬГИДЕНЬГИДЕНЬГИ.
+                        После запуска лидер пати (номера, оканчивающиеся на 1 или 6)
+                        начнёт проверять лобби и приглашать игроков. Остановить можно в любой момент.
                     </p>
                 </div>
 
                 <form method="post"
                       action="{{ url_for('user_range_command', range_id=rng.id) }}"
-                      style="margin:0;">
+                      style="display:flex; gap:8px; flex-wrap:wrap; margin:0;">
                     <button class="btn" type="submit" name="action" value="startbot">
                         Запуск бота
+                    </button>
+                    <button class="btn btn-secondary" type="submit" name="action" value="stopbot">
+                        Остановить бота
                     </button>
                 </form>
             </div>
@@ -83,9 +87,9 @@
             <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
                 <div>
                     <h4 style="margin:0;">Выполнить автонастройку на всех аккаунтах</h4>
-                    <p style="margin-top:4px; margin-bottom:0;">
-                        Запустить автоматическую настройку на всех аккаунтах одновременно.
-                    </p>
+                <p style="margin-top:4px; margin-bottom:0;">
+                    Запустить автоматическую настройку на всех аккаунтах одновременно.
+                </p>
                 </div>
 
                 <form method="post"
@@ -239,4 +243,3 @@
 </script>
 {% endif %}
 {% endblock %}
-
