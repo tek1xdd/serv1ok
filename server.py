@@ -1,6 +1,7 @@
 # server.py
 # -*- coding: utf-8 -*-
 from functools import wraps
+from datetime import datetime
 
 from flask import (
     Flask, render_template, redirect, url_for,
@@ -39,6 +40,12 @@ class NumberRange(db.Model):
         lazy=True,
         cascade="all, delete-orphan",
     )
+    logs = db.relationship(
+        "AutoLoginLog",
+        backref="range",
+        lazy=True,
+        cascade="all, delete-orphan",
+    )
 
 
 class AutoLoginJob(db.Model):
@@ -53,6 +60,14 @@ class AutoLoginJob(db.Model):
 
     status = db.Column(db.String(32), default="pending")  # pending / taken / done / error
     error_message = db.Column(db.String(500))
+
+
+class AutoLoginLog(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    range_id = db.Column(db.Integer, db.ForeignKey("number_range.id"), nullable=False)
+    number = db.Column(db.Integer, nullable=False)  # номер бота
+    message = db.Column(db.String(500), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
 # ====== ХЕЛПЕРЫ ======
@@ -244,11 +259,21 @@ def user_range(range_id: int):
     if tab not in ("settings", "autologin", "logs"):
         tab = "settings"
 
+    jobs = AutoLoginJob.query.filter_by(range_id=rng.id).order_by(
+        AutoLoginJob.id.desc()
+    ).all()
+
+    logs = AutoLoginLog.query.filter_by(range_id=rng.id).order_by(
+        AutoLoginLog.created_at.desc()
+    ).limit(200).all()
+
     return render_template(
         "user_range.html",
         user=user,
         rng=rng,
         tab=tab,
+        jobs=jobs,
+        logs=logs,
     )
 
 
@@ -361,6 +386,39 @@ def api_autologin_result():
     job.status = status
     job.error_message = message[:500]
     db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/autologin/log", methods=["POST"])
+def api_autologin_log():
+    """
+    Бот шлёт сюда сообщения лога:
+    { "number": 51, "message": "Steam запущен" }
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    number = data.get("number")
+    message = (data.get("message") or "").strip()
+
+    if number is None or not message:
+        return jsonify({"ok": False, "error": "number and message required"}), 400
+
+    # ищем диапазон, к которому относится этот номер
+    rng = (
+        NumberRange.query
+        .filter(NumberRange.start <= int(number), NumberRange.end >= int(number))
+        .first()
+    )
+    if not rng:
+        return jsonify({"ok": False, "error": "range not found"}), 404
+
+    log_row = AutoLoginLog(
+        range_id=rng.id,
+        number=int(number),
+        message=message[:500],
+    )
+    db.session.add(log_row)
+    db.session.commit()
+
     return jsonify({"ok": True})
 
 
