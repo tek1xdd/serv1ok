@@ -57,7 +57,7 @@ class NumberRange(db.Model):
 class AutoLoginJob(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     range_id = db.Column(db.Integer, db.ForeignKey("number_range.id"), nullable=False)
-    number = db.Column(db.Integer, nullable=False)  # конкретный номер (51, 52, ...)
+    number = db.Column(db.Integer, nullable=False)
 
     login = db.Column(db.String(255), nullable=False)
     password = db.Column(db.String(255), nullable=False)
@@ -71,7 +71,7 @@ class AutoLoginJob(db.Model):
 class AutoLoginLog(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     range_id = db.Column(db.Integer, db.ForeignKey("number_range.id"), nullable=False)
-    number = db.Column(db.Integer, nullable=False)  # номер бота
+    number = db.Column(db.Integer, nullable=False)
     message = db.Column(db.String(500), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
@@ -79,7 +79,7 @@ class AutoLoginLog(db.Model):
 class RangeCommand(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     range_id = db.Column(db.Integer, db.ForeignKey("number_range.id"), nullable=False)
-    number = db.Column(db.Integer, nullable=False)     # номер бота
+    number = db.Column(db.Integer, nullable=False)
     action = db.Column(db.String(50), nullable=False)  # "novokek" / "played"
     status = db.Column(db.String(32), default="pending")  # pending / taken / done / error
     error_message = db.Column(db.String(500))
@@ -293,6 +293,31 @@ def user_range(range_id: int):
     )
 
 
+@app.route("/range/<int:range_id>/logs-json")
+@login_required
+def range_logs_json(range_id: int):
+    """JSON для автообновления логов во вкладке 'Логи'."""
+    user = current_user()
+    rng = NumberRange.query.get_or_404(range_id)
+    if rng.user_id != user.id:
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+
+    logs = AutoLoginLog.query.filter_by(range_id=rng.id).order_by(
+        AutoLoginLog.created_at.desc()
+    ).limit(200).all()
+
+    # отдаём в прямом порядке (старые сверху, новые снизу)
+    data = [
+        {
+            "time": l.created_at.strftime("%H:%M:%S"),
+            "number": l.number,
+            "message": l.message,
+        }
+        for l in reversed(logs)
+    ]
+    return jsonify({"ok": True, "logs": data})
+
+
 @app.route("/range/<int:range_id>/autologin/start", methods=["POST"])
 @login_required
 def user_range_autologin_start(range_id):
@@ -311,7 +336,6 @@ def user_range_autologin_start(range_id):
         flash("Нужно указать хотя бы одну строку с логином.", "danger")
         return redirect(url_for("user_range", range_id=range_id, tab="autologin"))
 
-    # удаляем старые ожидающие задачи по диапазону
     AutoLoginJob.query.filter_by(range_id=rng.id, status="pending").delete()
 
     numbers = list(range(rng.start, rng.end + 1))
@@ -383,7 +407,6 @@ def user_range_command(range_id):
 # ====== API ДЛЯ АВТОВХОДА ======
 @app.route("/api/autologin/next", methods=["POST"])
 def api_autologin_next():
-    """Клиент (вирта) запрашивает задачу по своему номеру."""
     data = request.get_json(force=True, silent=True) or {}
     number = data.get("number")
 
@@ -418,7 +441,6 @@ def api_autologin_next():
 
 @app.route("/api/autologin/result", methods=["POST"])
 def api_autologin_result():
-    """Клиент отправляет результат выполнения задачи."""
     data = request.get_json(force=True, silent=True) or {}
     job_id = data.get("id")
     status = data.get("status")
@@ -439,10 +461,6 @@ def api_autologin_result():
 
 @app.route("/api/autologin/log", methods=["POST"])
 def api_autologin_log():
-    """
-    Бот шлёт сюда сообщения лога:
-    { "number": 51, "message": "Steam запущен" }
-    """
     data = request.get_json(force=True, silent=True) or {}
     number = data.get("number")
     message = (data.get("message") or "").strip()
@@ -469,7 +487,7 @@ def api_autologin_log():
     return jsonify({"ok": True})
 
 
-# ====== API ДЛЯ КОМАНД (Новокек / Я играл) ======
+# ====== API ДЛЯ КОМАНД ======
 @app.route("/api/command/next", methods=["POST"])
 def api_command_next():
     data = request.get_json(force=True, silent=True) or {}
@@ -519,19 +537,17 @@ def api_command_result():
     return jsonify({"ok": True})
 
 
-# ====== КОМАНДЫ ДЛЯ ТЕРМИНАЛА ======
+# ====== CLI ======
 @app.cli.command("init-db")
 def init_db():
-    """flask --app server init-db"""
     db.create_all()
     print("База создана.")
 
 
 @app.cli.command("create-admin")
 def create_admin():
-    """flask --app server create-admin"""
     username = "admin"
-    password = "admin"  # поменяй после первого входа
+    password = "admin"
     if User.query.filter_by(username=username).first():
         print("Админ уже существует.")
         return
@@ -548,4 +564,9 @@ def create_admin():
 if __name__ == "__main__":
     with app.app_context():
         db.create_all()
-    app.run(debug=True)
+    # запуск сервера напрямую: python3 server.py
+    app.run(
+        host="0.0.0.0",  # доступен снаружи (для вирт и браузера)
+        port=5000,       # тот же порт, что и раньше
+        debug=False      # в проде лучше выключить debug
+    )
