@@ -32,28 +32,47 @@
 
 <div style="margin-top:18px;">
     {% if tab == 'settings' %}
-        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
-            <div>
-                <h3>Режим привязки скрытого PTS</h3>
-                <p>Выполнить автонастройку на всех аккаунтах.</p>
-            </div>
-            <form method="post"
-                  action="{{ url_for('user_range_command', range_id=rng.id) }}"
-                  style="display:flex; flex-direction:column; gap:6px; align-items:flex-end;">
-                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <div style="display:flex; flex-direction:column; gap:18px;">
+
+            <!-- Режим привязки скрытого PTS -->
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+                <div>
+                    <h3>Режим привязки скрытого PTS</h3>
+                    <p style="margin-top:4px; margin-bottom:0;">
+                        Выбери режим для всех аккаунтов в диапазоне.
+                    </p>
+                </div>
+
+                <form method="post"
+                      action="{{ url_for('user_range_command', range_id=rng.id) }}"
+                      style="display:flex; gap:8px; flex-wrap:wrap; margin:0;">
                     <button class="btn" type="submit" name="action" value="novokek">
                         Новичок (750 MMR)
                     </button>
                     <button class="btn btn-secondary" type="submit" name="action" value="played">
                         Я уже играл (1600 MMR)
                     </button>
+                </form>
+            </div>
+
+            <!-- Автонастройка -->
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+                <div>
+                    <h4 style="margin:0;">Выполнить автонастройку на всех аккаунтах</h4>
+                    <p style="margin-top:4px; margin-bottom:0;">
+                        Запустить последовательность кликов для привязки скрытого PTS на каждом аккаунте диапазона.
+                    </p>
                 </div>
-                <div style="display:flex; justify-content:flex-end; width:100%;">
+
+                <form method="post"
+                      action="{{ url_for('user_range_command', range_id=rng.id) }}"
+                      style="margin:0;">
                     <button class="btn btn-secondary" type="submit" name="action" value="autoconfig">
                         Автонастройка
                     </button>
-                </div>
-            </form>
+                </form>
+            </div>
+
         </div>
 
     {% elif tab == 'autologin' %}
