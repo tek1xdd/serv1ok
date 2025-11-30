@@ -68,8 +68,51 @@
         </form>
 
     {% elif tab == 'logs' %}
-        <h3>Логи</h3>
-        <p>Тут позже выведем логи и статусы задач автологина по диапазону.</p>
+        <h3>Логи автологинов</h3>
+
+        {% if not jobs and not logs %}
+            <p>Пока нет задач и логов.</p>
+        {% else %}
+
+            {% if jobs %}
+                <h4 style="margin-top:10px;">Задачи</h4>
+                <table style="margin-top:4px;">
+                    <tr>
+                        <th>ID</th>
+                        <th>Номер</th>
+                        <th>Логин</th>
+                        <th>Статус</th>
+                        <th>Сообщение</th>
+                    </tr>
+                    {% for j in jobs %}
+                    <tr>
+                        <td>{{ j.id }}</td>
+                        <td>{{ j.number }}</td>
+                        <td>{{ j.login }}</td>
+                        <td>{{ j.status }}</td>
+                        <td>{{ j.error_message }}</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            {% endif %}
+
+            {% if logs %}
+                <h4 style="margin-top:16px;">Вывод бота</h4>
+                <div style="max-height:260px; overflow-y:auto; padding:8px 10px;
+                            background: rgba(0,0,0,0.4); border-radius:10px;
+                            font-family: monospace; font-size:12px;">
+                    {% for l in logs %}
+                        <div>
+                            <span style="opacity:.6;">
+                                [{{ l.created_at.strftime('%H:%M:%S') }}]</span>
+                            <span>#{{ l.number }}:</span>
+                            <span>{{ l.message }}</span>
+                        </div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+
+        {% endif %}
     {% endif %}
 </div>
 {% endblock %}
