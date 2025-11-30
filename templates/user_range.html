@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Диапазон {{ rng.start }}–{{ rng.end }}{% endblock %}
+
 {% block content %}
 <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
     <div>
@@ -16,23 +17,47 @@
 <div style="margin-top:18px;">
     <div class="tabs">
         <a href="{{ url_for('user_range', range_id=rng.id, tab='settings') }}"
-           class="{% if tab == 'settings' %}active{% endif %}">
+           class="tab-link {% if tab == 'settings' %}active{% endif %}">
             Настройка
         </a>
         <a href="{{ url_for('user_range', range_id=rng.id, tab='autologin') }}"
-           class="{% if tab == 'autologin' %}active{% endif %}">
+           class="tab-link {% if tab == 'autologin' %}active{% endif %}">
             Автовходы
         </a>
         <a href="{{ url_for('user_range', range_id=rng.id, tab='logs') }}"
-           class="{% if tab == 'logs' %}active{% endif %}">
+           class="tab-link {% if tab == 'logs' %}active{% endif %}">
             Логи
+        </a>
+        <a href="{{ url_for('user_range', range_id=rng.id, tab='state') }}"
+           class="tab-link {% if tab == 'state' %}active{% endif %}">
+            Состояние аккаунтов
         </a>
     </div>
 </div>
 
 <div style="margin-top:18px;">
+
     {% if tab == 'settings' %}
         <div style="display:flex; flex-direction:column; gap:18px;">
+
+            <!-- Запуск бота -->
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+                <div>
+                    <h3>Запуск бота</h3>
+                    <p style="margin-top:4px; margin-bottom:0;">
+                        После запуска лидер пати (номера, оканчивающиеся на 1 или 6)
+                        начнёт проверять лобби и приглашать игроков.
+                    </p>
+                </div>
+
+                <form method="post"
+                      action="{{ url_for('user_range_command', range_id=rng.id) }}"
+                      style="margin:0;">
+                    <button class="btn" type="submit" name="action" value="startbot">
+                        Запуск бота
+                    </button>
+                </form>
+            </div>
 
             <!-- Режим привязки скрытого PTS -->
             <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
@@ -60,7 +85,7 @@
                 <div>
                     <h4 style="margin:0;">Выполнить автонастройку на всех аккаунтах</h4>
                     <p style="margin-top:4px; margin-bottom:0;">
-                        Запустить последовательность кликов для привязки скрытого PTS на каждом аккаунте диапазона.
+                        Запустить автоматическую настройку на всех аккаунтах одновременно.
                     </p>
                 </div>
 
@@ -116,7 +141,7 @@
 
             {% if jobs %}
                 <h4 style="margin-top:10px;">Задачи</h4>
-                <table style="margin-top:4px;">
+                <table style="margin-top:4px;" class="table">
                     <tr>
                         <th>ID</th>
                         <th>Номер</th>
@@ -151,6 +176,33 @@
                 {% endfor %}
             </div>
 
+        {% endif %}
+
+    {% elif tab == 'state' %}
+        <h3>Состояние аккаунтов</h3>
+        {% if not states %}
+            <p class="muted">
+                Пока нет данных по аккаунтам. Клиенты ещё не отправили свои ID.
+            </p>
+        {% else %}
+            <table class="table">
+                <thead>
+                <tr>
+                    <th>Номер бота</th>
+                    <th>ID аккаунта</th>
+                    <th>Обновлено</th>
+                </tr>
+                </thead>
+                <tbody>
+                {% for s in states %}
+                    <tr>
+                        <td>{{ s.number }}</td>
+                        <td>{{ s.steam_id }}</td>
+                        <td>{{ s.last_update.strftime("%Y-%m-%d %H:%M") if s.last_update else "" }}</td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
         {% endif %}
     {% endif %}
 </div>

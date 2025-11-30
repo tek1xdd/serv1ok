@@ -52,6 +52,12 @@ class NumberRange(db.Model):
         lazy=True,
         cascade="all, delete-orphan",
     )
+    account_states = db.relationship(
+        "AccountState",
+        backref="range",
+        lazy=True,
+        cascade="all, delete-orphan",
+    )
 
 
 class AutoLoginJob(db.Model):
@@ -80,10 +86,18 @@ class RangeCommand(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     range_id = db.Column(db.Integer, db.ForeignKey("number_range.id"), nullable=False)
     number = db.Column(db.Integer, nullable=False)
-    action = db.Column(db.String(50), nullable=False)  # "novokek" / "played"
+    action = db.Column(db.String(50), nullable=False)  # novokek / played / autoconfig / startbot
     status = db.Column(db.String(32), default="pending")  # pending / taken / done / error
     error_message = db.Column(db.String(500))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class AccountState(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    range_id = db.Column(db.Integer, db.ForeignKey("number_range.id"), nullable=False)
+    number = db.Column(db.Integer, nullable=False)
+    steam_id = db.Column(db.String(64), nullable=False)
+    last_update = db.Column(db.DateTime, default=datetime.utcnow)
 
 
 # ====== ХЕЛПЕРЫ ======
@@ -263,7 +277,7 @@ def user_dashboard():
 @app.route("/range/<int:range_id>")
 @login_required
 def user_range(range_id: int):
-    """Страница конкретного диапазона: вкладки Настройка/Автовходы/Логи."""
+    """Страница конкретного диапазона: вкладки Настройка/Автовходы/Логи/Состояние."""
     user = current_user()
     rng = NumberRange.query.get_or_404(range_id)
 
@@ -272,7 +286,7 @@ def user_range(range_id: int):
         return redirect(url_for("user_dashboard"))
 
     tab = request.args.get("tab", "settings")
-    if tab not in ("settings", "autologin", "logs"):
+    if tab not in ("settings", "autologin", "logs", "state"):
         tab = "settings"
 
     jobs = AutoLoginJob.query.filter_by(range_id=rng.id).order_by(
@@ -283,6 +297,11 @@ def user_range(range_id: int):
         AutoLoginLog.created_at.desc()
     ).limit(200).all()
 
+    states = AccountState.query.filter_by(range_id=rng.id).order_by(
+        AccountState.number,
+        AccountState.steam_id,
+    ).all()
+
     return render_template(
         "user_range.html",
         user=user,
@@ -290,6 +309,7 @@ def user_range(range_id: int):
         tab=tab,
         jobs=jobs,
         logs=logs,
+        states=states,
     )
 
 
@@ -306,7 +326,6 @@ def range_logs_json(range_id: int):
         AutoLoginLog.created_at.desc()
     ).limit(200).all()
 
-    # отдаём в прямом порядке (старые сверху, новые снизу)
     data = [
         {
             "time": l.created_at.strftime("%H:%M:%S"),
@@ -375,7 +394,7 @@ def user_range_autologin_start(range_id):
 @app.route("/range/<int:range_id>/command", methods=["POST"])
 @login_required
 def user_range_command(range_id):
-    """Кнопки 'Новичок' / 'Я уже играл' / 'Автонастройка' во вкладке Настройка."""
+    """Кнопки 'Запуск бота' / 'Новичок' / 'Я уже играл' / 'Автонастройка'."""
     user = current_user()
     rng = NumberRange.query.get_or_404(range_id)
 
@@ -386,6 +405,7 @@ def user_range_command(range_id):
     action = request.form.get("action")
 
     labels = {
+        "startbot": "Запуск бота",
         "novokek": "Новичок (750 MMR)",
         "played": "Я уже играл (1600 MMR)",
         "autoconfig": "Автонастройка",
@@ -543,6 +563,96 @@ def api_command_result():
     return jsonify({"ok": True})
 
 
+# ====== API ДЛЯ СОСТОЯНИЯ АККАУНТОВ ======
+@app.route("/api/accounts/update", methods=["POST"])
+def api_accounts_update():
+    data = request.get_json(force=True, silent=True) or {}
+    number = data.get("number")
+    steam_ids = data.get("steam_ids") or []
+
+    if number is None:
+        return jsonify({"ok": False, "error": "number required"}), 400
+
+    try:
+        number_int = int(number)
+    except Exception:
+        return jsonify({"ok": False, "error": "bad number"}), 400
+
+    if not steam_ids:
+        return jsonify({"ok": False, "error": "no steam_ids"}), 400
+
+    rng = (
+        NumberRange.query
+        .filter(NumberRange.start <= number_int, NumberRange.end >= number_int)
+        .first()
+    )
+    if not rng:
+        return jsonify({"ok": False, "error": "range not found"}), 404
+
+    AccountState.query.filter_by(range_id=rng.id, number=number_int).delete()
+
+    for sid in steam_ids:
+        sid_str = str(sid).strip()
+        if not sid_str:
+            continue
+        row = AccountState(
+            range_id=rng.id,
+            number=number_int,
+            steam_id=sid_str,
+            last_update=datetime.utcnow(),
+        )
+        db.session.add(row)
+
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/accounts/party")
+def api_accounts_party():
+    number = request.args.get("number", type=int)
+    if number is None:
+        return jsonify({"ok": False, "error": "number required"}), 400
+
+    rng = (
+        NumberRange.query
+        .filter(NumberRange.start <= number, NumberRange.end >= number)
+        .first()
+    )
+    if not rng:
+        return jsonify({"ok": False, "error": "range not found"}), 404
+
+    last_digit = abs(number) % 10
+    if last_digit not in (1, 6):
+        return jsonify({"ok": True, "party": []})
+
+    party_numbers = []
+    for i in range(1, 5):
+        n = number + i
+        if n <= rng.end:
+            party_numbers.append(n)
+
+    if not party_numbers:
+        return jsonify({"ok": True, "party": []})
+
+    rows = (
+        AccountState.query
+        .filter(
+            AccountState.range_id == rng.id,
+            AccountState.number.in_(party_numbers),
+        )
+        .order_by(AccountState.number, AccountState.last_update.desc())
+        .all()
+    )
+
+    id_map = {}
+    for row in rows:
+        if row.number not in id_map:
+            id_map[row.number] = row.steam_id
+
+    party = [{"number": n, "steam_id": id_map[n]} for n in party_numbers if n in id_map]
+    return jsonify({"ok": True, "party": party})
+
+
 # ====== CLI ======
 @app.cli.command("init-db")
 def init_db():
@@ -552,8 +662,8 @@ def init_db():
 
 @app.cli.command("create-admin")
 def create_admin():
-    username = "admin"
-    password = "admin"
+    username = "tek1"
+    password = "Kolya777"
     if User.query.filter_by(username=username).first():
         print("Админ уже существует.")
         return
@@ -570,9 +680,4 @@ def create_admin():
 if __name__ == "__main__":
     with app.app_context():
         db.create_all()
-    # запуск сервера напрямую: python3 server.py
-    app.run(
-        host="0.0.0.0",  # доступен снаружи (для вирт и браузера)
-        port=5000,       # тот же порт, что и раньше
-        debug=False      # в проде лучше выключить debug
-    )
+    app.run(host="0.0.0.0", port=5000, debug=False)
