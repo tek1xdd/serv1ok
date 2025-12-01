@@ -74,6 +74,7 @@
         .topbar-right a {
             color: var(--accent-soft);
             font-size: 14px;
+            margin-left: 14px;
         }
 
         .page { flex: 1; }
@@ -252,7 +253,11 @@
             <div>Панель бота</div>
         </div>
         <div class="topbar-right">
-            {% if session.user_id %}
+            {% if current_user %}
+                {% if current_user.is_admin %}
+                    <a href="{{ url_for('user_dashboard') }}">Мои диапазоны</a>
+                    <a href="{{ url_for('admin_dashboard') }}">Админка</a>
+                {% endif %}
                 <a href="{{ url_for('logout') }}">Выход</a>
             {% endif %}
         </div>

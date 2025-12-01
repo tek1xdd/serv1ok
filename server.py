@@ -131,6 +131,12 @@ def current_user():
     return User.query.get(session["user_id"])
 
 
+@app.context_processor
+def inject_current_user():
+    # теперь в шаблонах есть переменная current_user
+    return {"current_user": current_user()}
+
+
 # ====== РОУТЫ ОСНОВНЫЕ ======
 @app.route("/")
 def index():
@@ -174,7 +180,7 @@ def admin_dashboard():
     return render_template("admin_dashboard.html", users=users)
 
 
-@app.route("/admin/users/new", methods=["GET", "POST"])
+@app.route("/admin/users.new", methods=["GET", "POST"])
 @admin_required
 def admin_create_user():
     if request.method == "POST":
@@ -279,11 +285,10 @@ def user_dashboard():
 @app.route("/range/<int:range_id>")
 @login_required
 def user_range(range_id: int):
-    """Страница конкретного диапазона: вкладки Настройка/Автовходы/Логи/Состояние."""
     user = current_user()
     rng = NumberRange.query.get_or_404(range_id)
 
-    # Админ может управлять любым диапазоном; обычный юзер — только своим
+    # админ может управлять любым диапазоном
     if not user.is_admin and rng.user_id != user.id:
         flash("У вас нет прав на этот диапазон.", "danger")
         return redirect(url_for("user_dashboard"))
@@ -319,11 +324,9 @@ def user_range(range_id: int):
 @app.route("/range/<int:range_id>/logs-json")
 @login_required
 def range_logs_json(range_id: int):
-    """JSON для автообновления логов во вкладке 'Логи'."""
     user = current_user()
     rng = NumberRange.query.get_or_404(range_id)
 
-    # тут тоже учёт админа
     if not user.is_admin and rng.user_id != user.id:
         return jsonify({"ok": False, "error": "forbidden"}), 403
 
@@ -345,11 +348,9 @@ def range_logs_json(range_id: int):
 @app.route("/range/<int:range_id>/autologin/start", methods=["POST"])
 @login_required
 def user_range_autologin_start(range_id):
-    """Создание задач автологина по диапазону."""
     user = current_user()
     rng = NumberRange.query.get_or_404(range_id)
 
-    # админ может запускать автологин для любого диапазона
     if not user.is_admin and rng.user_id != user.id:
         flash("У вас нет прав на этот диапазон.", "danger")
         return redirect(url_for("user_dashboard"))
@@ -400,11 +401,9 @@ def user_range_autologin_start(range_id):
 @app.route("/range/<int:range_id>/command", methods=["POST"])
 @login_required
 def user_range_command(range_id):
-    """Кнопки 'Запуск бота' / 'Остановить бота' / 'Новичок' / 'Я уже играл' / 'Автонастройка'."""
     user = current_user()
     rng = NumberRange.query.get_or_404(range_id)
 
-    # и тут админ имеет полный доступ
     if not user.is_admin and rng.user_id != user.id:
         flash("У вас нет прав на этот диапазон.", "danger")
         return redirect(url_for("user_dashboard"))
@@ -664,10 +663,6 @@ def api_accounts_party():
 # ====== API ДЛЯ LOBBY ID ======
 @app.route("/api/accounts/lobby_update", methods=["POST"])
 def api_accounts_lobby_update():
-    """
-    Тело: { "number": 51, "lobby_id": "123456789" }
-    Вызывается клиентом (start_accept.py), когда в console.log появился новый Lobby ID.
-    """
     data = request.get_json(force=True, silent=True) or {}
     number = data.get("number")
     lobby_id = (data.get("lobby_id") or "").strip()
@@ -714,17 +709,6 @@ def api_accounts_lobby_update():
 
 @app.route("/api/accounts/lobby_state")
 def api_accounts_lobby_state():
-    """
-    GET /api/accounts/lobby_state?number=51
-
-    Ответ:
-      { "ok": true, "mode": "same"|"different"|"waiting", "lobby_id": "..."|null }
-
-    mode:
-      - waiting   — для этого номера нет lobby_id
-      - same      — у ВСЕХ номеров в диапазоне есть lobby_id и они одинаковые
-      - different — кто-то без lobby_id или lobby_id отличаются
-    """
     number = request.args.get("number", type=int)
     if number is None:
         return jsonify({"ok": False, "error": "number required"}), 400
@@ -779,10 +763,6 @@ def api_accounts_lobby_state():
 
 @app.route("/api/accounts/lobby_reset", methods=["POST"])
 def api_accounts_lobby_reset():
-    """
-    Сбрасываем lobby_id для конкретного номера:
-      { "number": 51 }
-    """
     data = request.get_json(force=True, silent=True) or {}
     number = data.get("number")
 
