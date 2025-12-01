@@ -748,7 +748,7 @@ def api_accounts_lobby_state():
 
     my_lobby = my_row.lobby_id
     now = datetime.utcnow()
-    WAIT_SECONDS = 8  # окно для прихода lobby_id от остальных ботов диапазона
+    WAIT_SECONDS = 6  # окно для прихода lobby_id от остальных ботов диапазона
 
     # --- 1) Когда в диапазоне впервые появился ЭТОТ lobby_id? ---
     rows_same = (
@@ -806,33 +806,19 @@ def api_accounts_lobby_state():
 
 @app.route("/api/accounts/lobby_reset", methods=["POST"])
 def api_accounts_lobby_reset():
+    """
+    Клиент может вызывать этот метод после нажатия accept,
+    но мы больше НЕ трогаем lobby_id в базе, чтобы не ломать
+    вычисление same/different для остальных ботов.
+    """
     data = request.get_json(force=True, silent=True) or {}
     number = data.get("number")
 
     if number is None:
         return jsonify({"ok": False, "error": "number required"}), 400
 
-    try:
-        number_int = int(number)
-    except Exception:
-        return jsonify({"ok": False, "error": "bad number"}), 400
-
-    rng = (
-        NumberRange.query
-        .filter(NumberRange.start <= number_int, NumberRange.end >= number_int)
-        .first()
-    )
-    if not rng:
-        return jsonify({"ok": False, "error": "range not found"}), 404
-
-    rows = AccountState.query.filter_by(range_id=rng.id, number=number_int).all()
-    for r in rows:
-        r.lobby_id = None
-        r.last_update = datetime.utcnow()
-
-    db.session.commit()
+    # никаких изменений в БД не делаем
     return jsonify({"ok": True})
-
 
 # ====== CLI ======
 @app.cli.command("init-db")
@@ -862,6 +848,3 @@ if __name__ == "__main__":
     with app.app_context():
         db.create_all()
     app.run(host="0.0.0.0", port=5000, debug=False)
-
-
-
