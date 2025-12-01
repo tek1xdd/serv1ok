@@ -61,6 +61,50 @@
                 </form>
             </div>
 
+            <!-- Режим победа/поражение -->
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+                <div>
+                    <h3>Режим победа / поражение</h3>
+                    <p style="margin-top:4px; margin-bottom:0;">
+                        Определяет, какая пятёрка ({{ rng.start }}–{{ rng.start + 4 }} или {{ rng.start + 5 }}–{{ rng.end }})
+                        играет на победу в текущей игре. После окончания игры стороны автоматически меняются местами.
+                    </p>
+                </div>
+
+                <form method="post"
+                      action="{{ url_for('user_range_game_settings', range_id=rng.id) }}"
+                      style="margin:0;">
+                    <input type="hidden" name="action" value="set_win_side">
+                    {% set win_side = rng.win_side or 'right' %}
+
+                    <div style="display:flex; border:2px solid #000; border-radius:6px; overflow:hidden;">
+                        <!-- Левая команда (start..start+4) -->
+                        <button type="submit"
+                                name="win_side"
+                                value="left"
+                                style="min-width:110px; padding:6px 12px; border:none;
+                                       font-weight:600; font-size:11px;
+                                       background-color: {% if win_side == 'left' %}#1f8f3a{% else %}#7b1111{% endif %};
+                                       color:#fff;">
+                            {{ rng.start }}<br>
+                            {% if win_side == 'left' %}WIN{% else %}LOOSE{% endif %}
+                        </button>
+
+                        <!-- Правая команда (start+5..end) -->
+                        <button type="submit"
+                                name="win_side"
+                                value="right"
+                                style="min-width:110px; padding:6px 12px; border:none;
+                                       font-weight:600; font-size:11px;
+                                       background-color: {% if win_side == 'right' %}#1f8f3a{% else %}#7b1111{% endif %};
+                                       color:#fff;">
+                            {{ rng.start + 5 }}<br>
+                            {% if win_side == 'right' %}WIN{% else %}LOOSE{% endif %}
+                        </button>
+                    </div>
+                </form>
+            </div>
+
             <!-- Режим привязки скрытого PTS -->
             <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
                 <div>
@@ -86,9 +130,9 @@
             <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
                 <div>
                     <h4 style="margin:0;">Выполнить автонастройку на всех аккаунтах</h4>
-                <p style="margin-top:4px; margin-bottom:0;">
-                    Запустить автоматическую настройку на всех аккаунтах одновременно.
-                </p>
+                    <p style="margin-top:4px; margin-bottom:0;">
+                        Запустить автоматическую настройку на всех аккаунтах одновременно.
+                    </p>
                 </div>
 
                 <form method="post"
@@ -96,6 +140,25 @@
                       style="margin:0;">
                     <button class="btn btn-secondary" type="submit" name="action" value="autoconfig">
                         Автонастройка
+                    </button>
+                </form>
+            </div>
+
+            <!-- Сброс счётчика игр -->
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+                <div>
+                    <h4 style="margin:0;">Сбросить счётчик игр</h4>
+                    <p style="margin-top:4px; margin-bottom:0;">
+                        Обнуляет количество сыгранных игр для всех аккаунтов диапазона.
+                    </p>
+                </div>
+
+                <form method="post"
+                      action="{{ url_for('user_range_game_settings', range_id=rng.id) }}"
+                      style="margin:0;">
+                    <input type="hidden" name="action" value="reset_games">
+                    <button class="btn btn-secondary" type="submit">
+                        Сбросить счётчики
                     </button>
                 </form>
             </div>
@@ -193,6 +256,7 @@
                     <th>Номер бота</th>
                     <th>ID аккаунта</th>
                     <th>Lobby ID</th>
+                    <th>Игры</th>
                     <th>Обновлено</th>
                 </tr>
                 </thead>
@@ -208,6 +272,7 @@
                                 <span style="color:#777;">ожидание</span>
                             {% endif %}
                         </td>
+                        <td>{{ s.games_played or 0 }}</td>
                         <td>{{ s.last_update.strftime("%Y-%m-%d %H:%M") if s.last_update else "" }}</td>
                     </tr>
                 {% endfor %}

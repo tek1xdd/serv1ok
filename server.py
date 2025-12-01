@@ -33,6 +33,10 @@ class NumberRange(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
     start = db.Column(db.Integer, nullable=False)
     end = db.Column(db.Integer, nullable=False)
+    # какая команда сейчас играет на победу: "left" (start..start+4) или "right" (start+5..start+9)
+    win_side = db.Column(db.String(8), default="right")
+    # сколько игр завершено (используется для смещения позиций)
+    games_completed = db.Column(db.Integer, default=0)
 
     jobs = db.relationship(
         "AutoLoginJob",
@@ -100,6 +104,8 @@ class AccountState(db.Model):
     last_update = db.Column(db.DateTime, default=datetime.utcnow)
     # Lobby ID для этого номера (может быть NULL)
     lobby_id = db.Column(db.String(64))
+    # сколько игр отыграл аккаунт (увеличивается при завершении игры)
+    games_played = db.Column(db.Integer, default=0)
 
 
 # ====== ХЕЛПЕРЫ ======
@@ -436,6 +442,41 @@ def user_range_command(range_id):
     flash(f"Команда «{labels[action]}» отправлена на ботов диапазона.", "success")
     return redirect(url_for("user_range", range_id=range_id, tab="settings"))
 
+@app.route("/range/<int:range_id>/game-settings", methods=["POST"])
+@login_required
+def user_range_game_settings(range_id):
+    user = current_user()
+    rng = NumberRange.query.get_or_404(range_id)
+
+    if not user.is_admin and rng.user_id != user.id:
+        flash("У вас нет прав на этот диапазон.", "danger")
+        return redirect(url_for("user_dashboard"))
+
+    action = request.form.get("action")
+
+    if action == "set_win_side":
+        win_side = request.form.get("win_side")
+        if win_side not in ("left", "right"):
+            flash("Неверное значение стороны.", "danger")
+            return redirect(url_for("user_range", range_id=rng.id, tab="settings"))
+        rng.win_side = win_side
+        db.session.commit()
+        flash("Режим победа/поражение обновлён.", "success")
+        return redirect(url_for("user_range", range_id=rng.id, tab="settings"))
+
+    elif action == "reset_games":
+        rng.games_completed = 0
+        rows = AccountState.query.filter_by(range_id=rng.id).all()
+        for r in rows:
+            r.games_played = 0
+        db.session.commit()
+        flash("Счётчики игр для диапазона сброшены.", "success")
+        return redirect(url_for("user_range", range_id=rng.id, tab="state"))
+
+    else:
+        flash("Неизвестное действие.", "danger")
+        return redirect(url_for("user_range", range_id=rng.id, tab="settings"))
+
 
 # ====== API ДЛЯ АВТОВХОДА ======
 @app.route("/api/autologin/next", methods=["POST"])
@@ -596,7 +637,10 @@ def api_accounts_update():
     if not rng:
         return jsonify({"ok": False, "error": "range not found"}), 404
 
-    AccountState.query.filter_by(range_id=rng.id, number=number_int).delete()
+    old_rows = AccountState.query.filter_by(range_id=rng.id, number=number_int).all()
+    old_games = {r.steam_id: (r.games_played or 0) for r in old_rows}
+    for r in old_rows:
+        db.session.delete(r)
 
     for sid in steam_ids:
         sid_str = str(sid).strip()
@@ -607,8 +651,10 @@ def api_accounts_update():
             number=number_int,
             steam_id=sid_str,
             last_update=datetime.utcnow(),
+            games_played=old_games.get(sid_str, 0),
         )
         db.session.add(row)
+
 
     db.session.commit()
     return jsonify({"ok": True})
@@ -819,6 +865,140 @@ def api_accounts_lobby_reset():
 
     # никаких изменений в БД не делаем
     return jsonify({"ok": True})
+
+# ====== API ДЛЯ ИГРОВОЙ ЛОГИКИ (WIN/LOSE, ПОЗИЦИИ) ======
+@app.route("/api/game/config", methods=["POST"])
+def api_game_config():
+    data = request.get_json(force=True, silent=True) or {}
+    number = data.get("number")
+    if number is None:
+        return jsonify({"ok": False, "error": "number required"}), 400
+
+    try:
+        number_int = int(number)
+    except Exception:
+        return jsonify({"ok": False, "error": "bad number"}), 400
+
+    rng = (
+        NumberRange.query
+        .filter(NumberRange.start <= number_int, NumberRange.end >= number_int)
+        .first()
+    )
+    if not rng:
+        return jsonify({"ok": False, "error": "range not found"}), 404
+
+    total = rng.end - rng.start + 1
+    offset = number_int - rng.start
+    if offset < 0:
+        offset = 0
+
+    # команда: левая (start..start+4) или правая (start+5..start+9)
+    if total >= 10:
+        team_index = 0 if offset < 5 else 1
+    else:
+        team_index = 0
+    team = "left" if team_index == 0 else "right"
+
+    win_side = rng.win_side or "left"
+    play_for_win = (team == win_side)
+
+    games_completed = rng.games_completed or 0
+
+    # позиция 1..5 внутри своей команды, с циклическим сдвигом по числу игр
+    pos_offset = offset % 5
+    position = ((pos_offset + games_completed) % 5) + 1
+
+    is_master = (number_int == rng.start)
+
+    acc_row = (
+        AccountState.query
+        .filter_by(range_id=rng.id, number=number_int)
+        .order_by(AccountState.last_update.desc())
+        .first()
+    )
+    games_played = acc_row.games_played if acc_row and acc_row.games_played is not None else 0
+
+    return jsonify({
+        "ok": True,
+        "config": {
+            "number": number_int,
+            "range_id": rng.id,
+            "team": team,
+            "play_for_win": play_for_win,
+            "position": int(position),
+            "games_played": int(games_played),
+            "games_completed": int(games_completed),
+            "win_side": win_side,
+            "is_master": is_master,
+        }
+    })
+
+@app.route("/api/game/finished", methods=["POST"])
+def api_game_finished():
+    data = request.get_json(force=True, silent=True) or {}
+    number = data.get("number")
+    if number is None:
+        return jsonify({"ok": False, "error": "number required"}), 400
+
+    try:
+        number_int = int(number)
+    except Exception:
+        return jsonify({"ok": False, "error": "bad number"}), 400
+
+    rng = (
+        NumberRange.query
+        .filter(NumberRange.start <= number_int, NumberRange.end >= number_int)
+        .first()
+    )
+    if not rng:
+        return jsonify({"ok": False, "error": "range not found"}), 404
+
+    now = datetime.utcnow()
+    is_master = (number_int == rng.start)
+
+    # обновляем счётчик конкретного бота
+    row = (
+        AccountState.query
+        .filter_by(range_id=rng.id, number=number_int)
+        .order_by(AccountState.last_update.desc())
+        .first()
+    )
+    if not row:
+        row = AccountState(
+            range_id=rng.id,
+            number=number_int,
+            steam_id="unknown",
+            last_update=now,
+        )
+        db.session.add(row)
+
+    row.games_played = (row.games_played or 0) + 1
+    row.last_update = now
+
+    if is_master:
+        # мастер увеличивает счётчики всем ботам диапазона
+        others = (
+            AccountState.query
+            .filter(AccountState.range_id == rng.id, AccountState.id != row.id)
+            .all()
+        )
+        for r2 in others:
+            r2.games_played = (r2.games_played or 0) + 1
+            r2.last_update = now
+
+        rng.games_completed = (rng.games_completed or 0) + 1
+        win_side = rng.win_side or "left"
+        rng.win_side = "right" if win_side == "left" else "left"
+
+    db.session.commit()
+
+    return jsonify({
+        "ok": True,
+        "is_master": is_master,
+        "win_side": rng.win_side,
+        "games_completed": rng.games_completed,
+    })
+
 
 # ====== CLI ======
 @app.cli.command("init-db")
