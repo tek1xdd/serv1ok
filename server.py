@@ -716,12 +716,12 @@ def api_accounts_lobby_state():
       { "ok": true, "mode": "same"|"different"|"waiting", "lobby_id": "..."|null }
 
     Логика:
-      - как только у диапазона появляется новый lobby_id,
-        мы даём ~6 секунд "окно", чтобы остальные боты успели отправить свои id
-      - в это время всегда возвращаем mode = "waiting"
-      - после 6 секунд сверяем:
-          * если у КАЖДОГО номера в диапазоне есть этот же lobby_id -> "same"
-          * если кто-то без lobby_id или с другим -> "different"
+      - как только появляется новый lobby_id в диапазоне, даём ~6 секунд,
+        чтобы остальные успели его отправить → в это время всегда "waiting"
+      - после окна:
+          * если НЕТ записей с другим lobby_id → "same"
+          * если есть хотя бы один другой lobby_id → "different"
+      - отсутствие lobby_id (NULL) не считается различием
     """
     number = request.args.get("number", type=int)
     if number is None:
@@ -750,7 +750,7 @@ def api_accounts_lobby_state():
     now = datetime.utcnow()
     WAIT_SECONDS = 6  # окно для прихода lobby_id от остальных ботов диапазона
 
-    # --- 1) Определяем, когда в ЭТОМ диапазоне впервые появился ЭТОТ lobby_id ---
+    # --- 1) Когда в диапазоне впервые появился ЭТОТ lobby_id? ---
     rows_same = (
         AccountState.query
         .filter(
@@ -766,50 +766,25 @@ def api_accounts_lobby_state():
             if first_time is None or r.last_update < first_time:
                 first_time = r.last_update
 
-    # Если этот lobby_id появился недавно (< WAIT_SECONDS секунд назад),
-    # считаем, что ещё идёт "досылка" id от других ботов → режим ожидания
+    # если lobby_id появился меньше WAIT_SECONDS назад — ещё ждём
     if first_time:
         age = (now - first_time).total_seconds()
         if age < WAIT_SECONDS:
             return jsonify({"ok": True, "mode": "waiting", "lobby_id": my_lobby})
 
-    # --- 2) Окно прошло — сверяем по всему диапазону ---
-    numbers = list(range(rng.start, rng.end + 1))
-
-    rows = (
+    # --- 2) Окно прошло — ищем реальные конфликты ---
+    rows_all = (
         AccountState.query
         .filter(
             AccountState.range_id == rng.id,
-            AccountState.number.in_(numbers),
             AccountState.lobby_id.isnot(None),
         )
-        .order_by(AccountState.number, AccountState.last_update.desc())
         .all()
     )
 
-    # Берём последнюю запись на каждый номер
-    latest_per_number = {}
-    for r in rows:
-        if r.number not in latest_per_number:
-            latest_per_number[r.number] = r.lobby_id
+    conflict = any(r.lobby_id != my_lobby for r in rows_all)
 
-    if not latest_per_number:
-        # никто не прислал lobby_id, хотя у текущего уже есть — считаем ожиданием
-        return jsonify({"ok": True, "mode": "waiting", "lobby_id": my_lobby})
-
-    # Проверяем, что у КАЖДОГО номера в диапазоне lobby_id совпадает с моим
-    all_ok = True
-    for n in numbers:
-        lobby = latest_per_number.get(n)
-        if lobby != my_lobby:
-            all_ok = False
-            break
-
-    if all_ok:
-        mode = "same"
-    else:
-        mode = "different"
-
+    mode = "different" if conflict else "same"
     return jsonify({"ok": True, "mode": mode, "lobby_id": my_lobby})
 
 
@@ -871,4 +846,5 @@ if __name__ == "__main__":
     with app.app_context():
         db.create_all()
     app.run(host="0.0.0.0", port=5000, debug=False)
+
 
