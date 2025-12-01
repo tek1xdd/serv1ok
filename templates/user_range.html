@@ -192,6 +192,7 @@
                 <tr>
                     <th>Номер бота</th>
                     <th>ID аккаунта</th>
+                    <th>Lobby ID</th>
                     <th>Обновлено</th>
                 </tr>
                 </thead>
@@ -200,6 +201,13 @@
                     <tr>
                         <td>{{ s.number }}</td>
                         <td>{{ s.steam_id }}</td>
+                        <td>
+                            {% if s.lobby_id %}
+                                {{ s.lobby_id }}
+                            {% else %}
+                                <span style="color:#777;">ожидание</span>
+                            {% endif %}
+                        </td>
                         <td>{{ s.last_update.strftime("%Y-%m-%d %H:%M") if s.last_update else "" }}</td>
                     </tr>
                 {% endfor %}

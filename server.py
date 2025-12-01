@@ -86,7 +86,7 @@ class RangeCommand(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     range_id = db.Column(db.Integer, db.ForeignKey("number_range.id"), nullable=False)
     number = db.Column(db.Integer, nullable=False)
-    action = db.Column(db.String(50), nullable=False)  # novokek / played / autoconfig / startbot
+    action = db.Column(db.String(50), nullable=False)  # novokek / played / autoconfig / startbot / stopbot
     status = db.Column(db.String(32), default="pending")  # pending / taken / done / error
     error_message = db.Column(db.String(500))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -98,6 +98,8 @@ class AccountState(db.Model):
     number = db.Column(db.Integer, nullable=False)
     steam_id = db.Column(db.String(64), nullable=False)
     last_update = db.Column(db.DateTime, default=datetime.utcnow)
+    # Новый столбец для lobby id (для каждого номера)
+    lobby_id = db.Column(db.String(64))  # может быть NULL, пока лобби нет
 
 
 # ====== ХЕЛПЕРЫ ======
@@ -564,7 +566,7 @@ def api_command_result():
     return jsonify({"ok": True})
 
 
-# ====== API ДЛЯ СОСТОЯНИЯ АККАУНТОВ ======
+# ====== API ДЛЯ СОСТОЯНИЯ АККАУНТОВ (STEAM ID) ======
 @app.route("/api/accounts/update", methods=["POST"])
 def api_accounts_update():
     data = request.get_json(force=True, silent=True) or {}
@@ -652,6 +654,158 @@ def api_accounts_party():
 
     party = [{"number": n, "steam_id": id_map[n]} for n in party_numbers if n in id_map]
     return jsonify({"ok": True, "party": party})
+
+
+# ====== API ДЛЯ LOBBY ID ======
+@app.route("/api/accounts/lobby_update", methods=["POST"])
+def api_accounts_lobby_update():
+    """
+    Тело: { "number": 51, "lobby_id": "123456789" }
+    Вызывается клиентом (start_accept.py), когда в console.log появился новый Lobby ID.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    number = data.get("number")
+    lobby_id = (data.get("lobby_id") or "").strip()
+
+    if number is None:
+        return jsonify({"ok": False, "error": "number required"}), 400
+    if not lobby_id:
+        return jsonify({"ok": False, "error": "no lobby_id"}), 400
+
+    try:
+        number_int = int(number)
+    except Exception:
+        return jsonify({"ok": False, "error": "bad number"}), 400
+
+    rng = (
+        NumberRange.query
+        .filter(NumberRange.start <= number_int, NumberRange.end >= number_int)
+        .first()
+    )
+    if not rng:
+        return jsonify({"ok": False, "error": "range not found"}), 404
+
+    # Берём последнюю запись по этому номеру, либо создаём новую "unknown".
+    row = (
+        AccountState.query
+        .filter_by(range_id=rng.id, number=number_int)
+        .order_by(AccountState.last_update.desc())
+        .first()
+    )
+    if not row:
+        row = AccountState(
+            range_id=rng.id,
+            number=number_int,
+            steam_id="unknown",
+            last_update=datetime.utcnow(),
+        )
+        db.session.add(row)
+
+    row.lobby_id = lobby_id
+    row.last_update = datetime.utcnow()
+    db.session.commit()
+
+    return jsonify({"ok": True})
+
+
+@app.route("/api/accounts/lobby_state")
+def api_accounts_lobby_state():
+    """
+    GET /api/accounts/lobby_state?number=51
+
+    Ответ:
+      { "ok": true, "mode": "same"|"different"|"waiting", "lobby_id": "..."|null }
+
+    mode:
+      - waiting   — для этого номера нет lobby_id
+      - same      — у ВСЕХ номеров в диапазоне есть lobby_id и они одинаковые
+      - different — кто-то без lobby_id или lobby_id отличаются
+    """
+    number = request.args.get("number", type=int)
+    if number is None:
+        return jsonify({"ok": False, "error": "number required"}), 400
+
+    rng = (
+        NumberRange.query
+        .filter(NumberRange.start <= number, NumberRange.end >= number)
+        .first()
+    )
+    if not rng:
+        return jsonify({"ok": False, "error": "range not found"}), 404
+
+    # запись этого номера
+    my_row = (
+        AccountState.query
+        .filter_by(range_id=rng.id, number=number)
+        .order_by(AccountState.last_update.desc())
+        .first()
+    )
+    if not my_row or not my_row.lobby_id:
+        return jsonify({"ok": True, "mode": "waiting", "lobby_id": None})
+
+    my_lobby = my_row.lobby_id
+
+    numbers = list(range(rng.start, rng.end + 1))
+
+    rows = (
+        AccountState.query
+        .filter(
+            AccountState.range_id == rng.id,
+            AccountState.number.in_(numbers),
+            AccountState.lobby_id.isnot(None),
+        )
+        .order_by(AccountState.number, AccountState.last_update.desc())
+        .all()
+    )
+
+    latest_per_number = {}
+    for r in rows:
+        if r.number not in latest_per_number:
+            latest_per_number[r.number] = r.lobby_id
+
+    if not latest_per_number:
+        return jsonify({"ok": True, "mode": "waiting", "lobby_id": my_lobby})
+
+    if len(latest_per_number) == len(numbers) and len(set(latest_per_number.values())) == 1:
+        mode = "same"
+    else:
+        mode = "different"
+
+    return jsonify({"ok": True, "mode": mode, "lobby_id": my_lobby})
+
+
+@app.route("/api/accounts/lobby_reset", methods=["POST"])
+def api_accounts_lobby_reset():
+    """
+    Сбрасываем lobby_id для конкретного номера:
+      { "number": 51 }
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    number = data.get("number")
+
+    if number is None:
+        return jsonify({"ok": False, "error": "number required"}), 400
+
+    try:
+        number_int = int(number)
+    except Exception:
+        return jsonify({"ok": False, "error": "bad number"}), 400
+
+    rng = (
+        NumberRange.query
+        .filter(NumberRange.start <= number_int, NumberRange.end >= number_int)
+        .first()
+    )
+    if not rng:
+        return jsonify({"ok": False, "error": "range not found"}), 404
+
+    rows = AccountState.query.filter_by(range_id=rng.id, number=number_int).all()
+    for r in rows:
+        r.lobby_id = None
+        r.last_update = datetime.utcnow()
+
+    db.session.commit()
+    return jsonify({"ok": True})
 
 
 # ====== CLI ======
