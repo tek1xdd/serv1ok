@@ -719,9 +719,9 @@ def api_accounts_lobby_state():
       - как только появляется новый lobby_id в диапазоне, даём ~6 секунд,
         чтобы остальные успели его отправить → в это время всегда "waiting"
       - после окна:
-          * если НЕТ записей с другим lobby_id → "same"
-          * если есть хотя бы один другой lobby_id → "different"
-      - отсутствие lobby_id (NULL) не считается различием
+          * если есть хотя бы один ДРУГОЙ lobby_id → "different"
+          * если нет других, но не у всех номеров есть lobby_id → "different"
+          * если у всех номеров lobby_id == мой → "same"
     """
     number = request.args.get("number", type=int)
     if number is None:
@@ -748,7 +748,7 @@ def api_accounts_lobby_state():
 
     my_lobby = my_row.lobby_id
     now = datetime.utcnow()
-    WAIT_SECONDS = 6  # окно для прихода lobby_id от остальных ботов диапазона
+    WAIT_SECONDS = 8  # окно для прихода lobby_id от остальных ботов диапазона
 
     # --- 1) Когда в диапазоне впервые появился ЭТОТ lobby_id? ---
     rows_same = (
@@ -772,20 +772,36 @@ def api_accounts_lobby_state():
         if age < WAIT_SECONDS:
             return jsonify({"ok": True, "mode": "waiting", "lobby_id": my_lobby})
 
-    # --- 2) Окно прошло — ищем реальные конфликты ---
-    rows_all = (
+    # --- 2) Окно прошло — сверяем по всему диапазону ---
+    numbers = list(range(rng.start, rng.end + 1))
+
+    # Берём последнюю НЕ-NULL запись для каждого номера
+    rows = (
         AccountState.query
         .filter(
             AccountState.range_id == rng.id,
+            AccountState.number.in_(numbers),
             AccountState.lobby_id.isnot(None),
         )
+        .order_by(AccountState.number, AccountState.last_update.desc())
         .all()
     )
 
-    conflict = any(r.lobby_id != my_lobby for r in rows_all)
+    latest_per_number = {}
+    for r in rows:
+        if r.number not in latest_per_number:
+            latest_per_number[r.number] = r.lobby_id
 
-    mode = "different" if conflict else "same"
-    return jsonify({"ok": True, "mode": mode, "lobby_id": my_lobby})
+    # 1) Если есть хоть один lobby_id, отличающийся от моего → different
+    if any(lobby != my_lobby for lobby in latest_per_number.values()):
+        return jsonify({"ok": True, "mode": "different", "lobby_id": my_lobby})
+
+    # 2) Если НЕТ конфликтов, но не все номера диапазона прислали lobby_id → тоже different
+    if len(latest_per_number) < len(numbers):
+        return jsonify({"ok": True, "mode": "different", "lobby_id": my_lobby})
+
+    # 3) Иначе: каждый номер имеет lobby_id == my_lobby → same
+    return jsonify({"ok": True, "mode": "same", "lobby_id": my_lobby})
 
 
 @app.route("/api/accounts/lobby_reset", methods=["POST"])
@@ -846,5 +862,6 @@ if __name__ == "__main__":
     with app.app_context():
         db.create_all()
     app.run(host="0.0.0.0", port=5000, debug=False)
+
 
 
