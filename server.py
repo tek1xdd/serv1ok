@@ -98,8 +98,8 @@ class AccountState(db.Model):
     number = db.Column(db.Integer, nullable=False)
     steam_id = db.Column(db.String(64), nullable=False)
     last_update = db.Column(db.DateTime, default=datetime.utcnow)
-    # Новый столбец для lobby id (для каждого номера)
-    lobby_id = db.Column(db.String(64))  # может быть NULL, пока лобби нет
+    # Lobby ID для этого номера (может быть NULL)
+    lobby_id = db.Column(db.String(64))
 
 
 # ====== ХЕЛПЕРЫ ======
@@ -283,7 +283,8 @@ def user_range(range_id: int):
     user = current_user()
     rng = NumberRange.query.get_or_404(range_id)
 
-    if rng.user_id != user.id:
+    # Админ может управлять любым диапазоном; обычный юзер — только своим
+    if not user.is_admin and rng.user_id != user.id:
         flash("У вас нет прав на этот диапазон.", "danger")
         return redirect(url_for("user_dashboard"))
 
@@ -321,7 +322,9 @@ def range_logs_json(range_id: int):
     """JSON для автообновления логов во вкладке 'Логи'."""
     user = current_user()
     rng = NumberRange.query.get_or_404(range_id)
-    if rng.user_id != user.id:
+
+    # тут тоже учёт админа
+    if not user.is_admin and rng.user_id != user.id:
         return jsonify({"ok": False, "error": "forbidden"}), 403
 
     logs = AutoLoginLog.query.filter_by(range_id=rng.id).order_by(
@@ -346,7 +349,8 @@ def user_range_autologin_start(range_id):
     user = current_user()
     rng = NumberRange.query.get_or_404(range_id)
 
-    if rng.user_id != user.id:
+    # админ может запускать автологин для любого диапазона
+    if not user.is_admin and rng.user_id != user.id:
         flash("У вас нет прав на этот диапазон.", "danger")
         return redirect(url_for("user_dashboard"))
 
@@ -400,7 +404,8 @@ def user_range_command(range_id):
     user = current_user()
     rng = NumberRange.query.get_or_404(range_id)
 
-    if rng.user_id != user.id:
+    # и тут админ имеет полный доступ
+    if not user.is_admin and rng.user_id != user.id:
         flash("У вас нет прав на этот диапазон.", "danger")
         return redirect(url_for("user_dashboard"))
 
@@ -685,7 +690,6 @@ def api_accounts_lobby_update():
     if not rng:
         return jsonify({"ok": False, "error": "range not found"}), 404
 
-    # Берём последнюю запись по этому номеру, либо создаём новую "unknown".
     row = (
         AccountState.query
         .filter_by(range_id=rng.id, number=number_int)
@@ -733,7 +737,6 @@ def api_accounts_lobby_state():
     if not rng:
         return jsonify({"ok": False, "error": "range not found"}), 404
 
-    # запись этого номера
     my_row = (
         AccountState.query
         .filter_by(range_id=rng.id, number=number)
