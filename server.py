@@ -9,6 +9,9 @@ from flask import (
 )
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
+from functools import wraps
+from datetime import datetime
+import random
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = "super-secret-change-me"
@@ -33,9 +36,10 @@ class NumberRange(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
     start = db.Column(db.Integer, nullable=False)
     end = db.Column(db.Integer, nullable=False)
-    # какая команда сейчас играет на победу: "left" (start..start+4) или "right" (start+5..start+9)
-    win_side = db.Column(db.String(8), default="right")
-    # сколько игр завершено (используется для смещения позиций)
+
+    # какая пятёрка (левая/правая) играет на победу в текущей игре
+    win_group = db.Column(db.String(8), default="right")  # "left" / "right"
+    # сколько игр уже полностью сыграно (для рандомизации позиций)
     games_completed = db.Column(db.Integer, default=0)
 
     jobs = db.relationship(
@@ -104,8 +108,16 @@ class AccountState(db.Model):
     last_update = db.Column(db.DateTime, default=datetime.utcnow)
     # Lobby ID для этого номера (может быть NULL)
     lobby_id = db.Column(db.String(64))
-    # сколько игр отыграл аккаунт (увеличивается при завершении игры)
+
+    # сколько игр отыграл этот номер
     games_played = db.Column(db.Integer, default=0)
+    # последняя сторона, за которую играл бот: "svet" / "tma"
+    side = db.Column(db.String(8))
+    # последняя позиция 1..5
+    last_position = db.Column(db.Integer)
+    # последний режим: True = WIN, False = LOOSE
+    last_play_for_win = db.Column(db.Boolean)
+
 
 
 # ====== ХЕЛПЕРЫ ======
@@ -454,12 +466,12 @@ def user_range_game_settings(range_id):
 
     action = request.form.get("action")
 
-    if action == "set_win_side":
-        win_side = request.form.get("win_side")
-        if win_side not in ("left", "right"):
+    if action == "set_win_group":
+        win_group = request.form.get("win_group")
+        if win_group not in ("left", "right"):
             flash("Неверное значение стороны.", "danger")
             return redirect(url_for("user_range", range_id=rng.id, tab="settings"))
-        rng.win_side = win_side
+        rng.win_group = win_group
         db.session.commit()
         flash("Режим победа/поражение обновлён.", "success")
         return redirect(url_for("user_range", range_id=rng.id, tab="settings"))
@@ -637,6 +649,7 @@ def api_accounts_update():
     if not rng:
         return jsonify({"ok": False, "error": "range not found"}), 404
 
+    # сохраняем старые счётчики игр по steam_id
     old_rows = AccountState.query.filter_by(range_id=rng.id, number=number_int).all()
     old_games = {r.steam_id: (r.games_played or 0) for r in old_rows}
     for r in old_rows:
@@ -655,9 +668,9 @@ def api_accounts_update():
         )
         db.session.add(row)
 
-
     db.session.commit()
     return jsonify({"ok": True})
+
 
 
 @app.route("/api/accounts/party")
@@ -866,13 +879,15 @@ def api_accounts_lobby_reset():
     # никаких изменений в БД не делаем
     return jsonify({"ok": True})
 
-# ====== API ДЛЯ ИГРОВОЙ ЛОГИКИ (WIN/LOSE, ПОЗИЦИИ) ======
+# ====== API ДЛЯ ИГРОВОЙ ЛОГИКИ (СТОРОНА, ПОЗИЦИИ, WIN/LOOSE) ======
 @app.route("/api/game/config", methods=["POST"])
 def api_game_config():
     data = request.get_json(force=True, silent=True) or {}
     number = data.get("number")
-    if number is None:
-        return jsonify({"ok": False, "error": "number required"}), 400
+    side = (data.get("side") or "").strip()
+
+    if number is None or side not in ("svet", "tma"):
+        return jsonify({"ok": False, "error": "number and side required"}), 400
 
     try:
         number_int = int(number)
@@ -887,56 +902,87 @@ def api_game_config():
     if not rng:
         return jsonify({"ok": False, "error": "range not found"}), 404
 
-    total = rng.end - rng.start + 1
-    offset = number_int - rng.start
-    if offset < 0:
-        offset = 0
+    numbers = list(range(rng.start, rng.end + 1))
+    total = len(numbers)
+    if total <= 0:
+        return jsonify({"ok": False, "error": "empty range"}), 400
 
-    # команда: левая (start..start+4) или правая (start+5..start+9)
-    if total >= 10:
-        team_index = 0 if offset < 5 else 1
-    else:
-        team_index = 0
-    team = "left" if team_index == 0 else "right"
+    rel = number_int - rng.start
+    if rel < 0 or rel >= total:
+        return jsonify({"ok": False, "error": "number not in range"}), 400
 
-    win_side = rng.win_side or "left"
-    play_for_win = (team == win_side)
+    # разбиваем диапазон по пятёркам: [start..start+4], [start+5..start+9], ...
+    group_index = rel // 5  # 0,1,...
+    index_in_group = rel % 5
+
+    group_start = group_index * 5
+    group_numbers = numbers[group_start:group_start + 5]
+    if not group_numbers:
+        group_numbers = [number_int]
+
+    # название группы для UI и win/lose (для 51-60 будет "left"/"right")
+    group = "left" if group_index == 0 else "right"
+
+    # какая группа сейчас играет на победу
+    win_group = rng.win_group or "right"
+    play_for_win = (group == win_group)
 
     games_completed = rng.games_completed or 0
 
-    # позиция 1..5 внутри своей команды, с циклическим сдвигом по числу игр
-    pos_offset = offset % 5
-    position = ((pos_offset + games_completed) % 5) + 1
+    # рандомная перестановка позиций 1..N внутри пятёрки,
+    # но детерминированная от range_id, group_index и games_completed
+    rnd = random.Random(rng.id * 1000 + group_index * 100 + games_completed)
+    base_positions = list(range(1, len(group_numbers) + 1))
+    rnd.shuffle(base_positions)
+    pos_map = {group_numbers[i]: base_positions[i] for i in range(len(group_numbers))}
+    position = int(pos_map.get(number_int, 1))
 
-    is_master = (number_int == rng.start)
-
-    acc_row = (
+    # сохраняем состояние в AccountState (сторона, позиция, режим)
+    now = datetime.utcnow()
+    rows = (
         AccountState.query
         .filter_by(range_id=rng.id, number=number_int)
-        .order_by(AccountState.last_update.desc())
-        .first()
+        .all()
     )
-    games_played = acc_row.games_played if acc_row and acc_row.games_played is not None else 0
+    if not rows:
+        row = AccountState(
+            range_id=rng.id,
+            number=number_int,
+            steam_id="unknown",
+            last_update=now,
+        )
+        db.session.add(row)
+        rows = [row]
+
+    for r in rows:
+        r.last_update = now
+        r.side = side
+        r.last_position = position
+        r.last_play_for_win = play_for_win
+
+    games_played = max((r.games_played or 0) for r in rows)
+    db.session.commit()
 
     return jsonify({
         "ok": True,
         "config": {
             "number": number_int,
-            "range_id": rng.id,
-            "team": team,
-            "play_for_win": play_for_win,
-            "position": int(position),
+            "side": side,
+            "group": group,
+            "play_for_win": bool(play_for_win),
+            "position": position,
             "games_played": int(games_played),
             "games_completed": int(games_completed),
-            "win_side": win_side,
-            "is_master": is_master,
-        }
+            "win_group": win_group,
+        },
     })
+
 
 @app.route("/api/game/finished", methods=["POST"])
 def api_game_finished():
     data = request.get_json(force=True, silent=True) or {}
     number = data.get("number")
+
     if number is None:
         return jsonify({"ok": False, "error": "number required"}), 400
 
@@ -954,16 +1000,12 @@ def api_game_finished():
         return jsonify({"ok": False, "error": "range not found"}), 404
 
     now = datetime.utcnow()
-    is_master = (number_int == rng.start)
-
-    # обновляем счётчик конкретного бота
-    row = (
+    rows = (
         AccountState.query
         .filter_by(range_id=rng.id, number=number_int)
-        .order_by(AccountState.last_update.desc())
-        .first()
+        .all()
     )
-    if not row:
+    if not rows:
         row = AccountState(
             range_id=rng.id,
             number=number_int,
@@ -971,33 +1013,28 @@ def api_game_finished():
             last_update=now,
         )
         db.session.add(row)
+        rows = [row]
 
-    row.games_played = (row.games_played or 0) + 1
-    row.last_update = now
+    for r in rows:
+        r.games_played = (r.games_played or 0) + 1
+        r.last_update = now
 
+    # мастер — первый номер диапазона; только он переключает WIN/LOOSE
+    is_master = (number_int == rng.start)
     if is_master:
-        # мастер увеличивает счётчики всем ботам диапазона
-        others = (
-            AccountState.query
-            .filter(AccountState.range_id == rng.id, AccountState.id != row.id)
-            .all()
-        )
-        for r2 in others:
-            r2.games_played = (r2.games_played or 0) + 1
-            r2.last_update = now
-
         rng.games_completed = (rng.games_completed or 0) + 1
-        win_side = rng.win_side or "left"
-        rng.win_side = "right" if win_side == "left" else "left"
+        win_group = rng.win_group or "right"
+        rng.win_group = "left" if win_group == "right" else "right"
 
     db.session.commit()
 
     return jsonify({
         "ok": True,
         "is_master": is_master,
-        "win_side": rng.win_side,
         "games_completed": rng.games_completed,
+        "win_group": rng.win_group,
     })
+
 
 
 # ====== CLI ======

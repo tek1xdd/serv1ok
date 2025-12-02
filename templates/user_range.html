@@ -66,40 +66,37 @@
                 <div>
                     <h3>Режим победа / поражение</h3>
                     <p style="margin-top:4px; margin-bottom:0;">
-                        Определяет, какая пятёрка ({{ rng.start }}–{{ rng.start + 4 }} или {{ rng.start + 5 }}–{{ rng.end }})
-                        играет на победу в текущей игре. После окончания игры стороны автоматически меняются местами.
+                        Определяет, какая пятёрка ({{ rng.start }}–{{ rng.start + 4 }}
+                        или {{ rng.start + 5 }}–{{ rng.end }}) играет на победу
+                        в текущей игре. После завершения игры стороны меняются местами автоматически.
                     </p>
                 </div>
 
                 <form method="post"
                       action="{{ url_for('user_range_game_settings', range_id=rng.id) }}"
                       style="margin:0;">
-                    <input type="hidden" name="action" value="set_win_side">
-                    {% set win_side = rng.win_side or 'right' %}
+                    <input type="hidden" name="action" value="set_win_group">
+                    {% set win_group = rng.win_group|default('right', true) %}
 
                     <div style="display:flex; border:2px solid #000; border-radius:6px; overflow:hidden;">
-                        <!-- Левая команда (start..start+4) -->
-                        <button type="submit"
-                                name="win_side"
-                                value="left"
+                        <!-- Левая пятёрка -->
+                        <button type="submit" name="win_group" value="left"
                                 style="min-width:110px; padding:6px 12px; border:none;
-                                       font-weight:600; font-size:11px;
-                                       background-color: {% if win_side == 'left' %}#1f8f3a{% else %}#7b1111{% endif %};
+                                       font-weight:600; font-size:11px; line-height:1.2;
+                                       background-color: {% if win_group == 'left' %}#1f8f3a{% else %}#7b1111{% endif %};
                                        color:#fff;">
                             {{ rng.start }}<br>
-                            {% if win_side == 'left' %}WIN{% else %}LOOSE{% endif %}
+                            {% if win_group == 'left' %}WIN{% else %}LOOSE{% endif %}
                         </button>
 
-                        <!-- Правая команда (start+5..end) -->
-                        <button type="submit"
-                                name="win_side"
-                                value="right"
+                        <!-- Правая пятёрка -->
+                        <button type="submit" name="win_group" value="right"
                                 style="min-width:110px; padding:6px 12px; border:none;
-                                       font-weight:600; font-size:11px;
-                                       background-color: {% if win_side == 'right' %}#1f8f3a{% else %}#7b1111{% endif %};
+                                       font-weight:600; font-size:11px; line-height:1.2;
+                                       background-color: {% if win_group == 'right' %}#1f8f3a{% else %}#7b1111{% endif %};
                                        color:#fff;">
                             {{ rng.start + 5 }}<br>
-                            {% if win_side == 'right' %}WIN{% else %}LOOSE{% endif %}
+                            {% if win_group == 'right' %}WIN{% else %}LOOSE{% endif %}
                         </button>
                     </div>
                 </form>
@@ -144,7 +141,7 @@
                 </form>
             </div>
 
-            <!-- Сброс счётчика игр -->
+            <!-- Сброс счётчиков игр -->
             <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
                 <div>
                     <h4 style="margin:0;">Сбросить счётчик игр</h4>
@@ -162,8 +159,6 @@
                     </button>
                 </form>
             </div>
-
-        </div>
 
     {% elif tab == 'autologin' %}
         <h3>Автовходы</h3>
@@ -256,6 +251,9 @@
                     <th>Номер бота</th>
                     <th>ID аккаунта</th>
                     <th>Lobby ID</th>
+                    <th>Сторона</th>
+                    <th>Позиция</th>
+                    <th>Режим</th>
                     <th>Игры</th>
                     <th>Обновлено</th>
                 </tr>
@@ -270,6 +268,25 @@
                                 {{ s.lobby_id }}
                             {% else %}
                                 <span style="color:#777;">ожидание</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if s.side == 'tma' %}
+                                Тьма
+                            {% elif s.side == 'svet' %}
+                                Свет
+                            {% else %}
+                                <span style="color:#777;">—</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ s.last_position or "" }}</td>
+                        <td>
+                            {% if s.last_play_for_win is none %}
+                                <span style="color:#777;">—</span>
+                            {% elif s.last_play_for_win %}
+                                WIN
+                            {% else %}
+                                LOOSE
                             {% endif %}
                         </td>
                         <td>{{ s.games_played or 0 }}</td>
