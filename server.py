@@ -42,6 +42,9 @@ class NumberRange(db.Model):
     # сколько игр уже полностью сыграно (для рандомизации позиций)
     games_completed = db.Column(db.Integer, default=0)
 
+    # последний сохранённый текст для автовходов (то, что ты вставляешь в textarea)
+    autologin_text = db.Column(db.Text)  # <-- ДОБАВЛЕНО
+
     jobs = db.relationship(
         "AutoLoginJob",
         backref="range",
@@ -315,6 +318,7 @@ def user_range(range_id: int):
     if tab not in ("settings", "autologin", "logs", "state"):
         tab = "settings"
 
+    # ВСЕ задачи по диапазону (их теперь максимум = размер диапазона)
     jobs = AutoLoginJob.query.filter_by(range_id=rng.id).order_by(
         AutoLoginJob.id.desc()
     ).all()
@@ -366,6 +370,12 @@ def range_logs_json(range_id: int):
 @app.route("/range/<int:range_id>/autologin/start", methods=["POST"])
 @login_required
 def user_range_autologin_start(range_id):
+    """
+    Старт автовходов:
+      - старые задачи ПОЛНОСТЬЮ очищаем для диапазона;
+      - создаём новые задачи только под текущий список аккаунтов;
+      - сырой текст аккаунтов сохраняем в rng.autologin_text (чтобы остался в textarea).
+    """
     user = current_user()
     rng = NumberRange.query.get_or_404(range_id)
 
@@ -380,7 +390,12 @@ def user_range_autologin_start(range_id):
         flash("Нужно указать хотя бы одну строку с логином.", "danger")
         return redirect(url_for("user_range", range_id=range_id, tab="autologin"))
 
-    AutoLoginJob.query.filter_by(range_id=rng.id, status="pending").delete()
+    # сохраняем текст, чтобы он оставался в форме
+    rng.autologin_text = raw
+
+    # УДАЛЯЕМ ВСЕ старые задачи этого диапазона (а не только pending),
+    # чтобы всегда было максимум «по одному на номер».
+    AutoLoginJob.query.filter_by(range_id=rng.id).delete()
 
     numbers = list(range(rng.start, rng.end + 1))
     count = min(len(lines), len(numbers))
@@ -453,6 +468,7 @@ def user_range_command(range_id):
 
     flash(f"Команда «{labels[action]}» отправлена на ботов диапазона.", "success")
     return redirect(url_for("user_range", range_id=range_id, tab="settings"))
+
 
 @app.route("/range/<int:range_id>/game-settings", methods=["POST"])
 @login_required
@@ -879,6 +895,7 @@ def api_accounts_lobby_reset():
     # никаких изменений в БД не делаем
     return jsonify({"ok": True})
 
+
 # ====== API ДЛЯ ИГРОВОЙ ЛОГИКИ (СТОРОНА, ПОЗИЦИИ, WIN/LOOSE) ======
 @app.route("/api/game/config", methods=["POST"])
 def api_game_config():
@@ -1034,7 +1051,6 @@ def api_game_finished():
         "games_completed": rng.games_completed,
         "win_group": rng.win_group,
     })
-
 
 
 # ====== CLI ======

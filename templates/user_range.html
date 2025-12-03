@@ -62,7 +62,7 @@
             </div>
 
             <!-- Режим победа/поражение -->
-            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px%;">
                 <div>
                     <h3>Режим победа / поражение</h3>
                     <p style="margin-top:4px; margin-bottom:0;">
@@ -159,6 +159,7 @@
                     </button>
                 </form>
             </div>
+        </div>
 
     {% elif tab == 'autologin' %}
         <h3>Автовходы</h3>
@@ -185,7 +186,7 @@
                                  background: rgba(15, 20, 30, 0.9);
                                  color:#f3f3f3;
                                  font-family: monospace;
-                                 font-size: 13px;"></textarea>
+                                 font-size: 13px;">{{ rng.autologin_text or "" }}</textarea>
             </div>
             <div style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap;">
                 <button class="btn" type="submit">Запустить автовходы</button>
@@ -193,14 +194,30 @@
         </form>
 
     {% elif tab == 'logs' %}
-        <h3>Логи автологинов</h3>
+        <h3>Логи</h3>
 
         {% if not jobs and not logs %}
             <p>Пока нет задач и логов.</p>
         {% else %}
 
+            <!-- СНАЧАЛА ВЫВОД БОТА -->
+            <h4 style="margin-top:10px;">Вывод бота</h4>
+            <div id="logs-container"
+                 style="max-height:260px; overflow-y:auto; padding:8px 10px;
+                        background: rgba(0,0,0,0.4); border-radius:10px;
+                        font-family: monospace; font-size:12px;">
+                {% for l in logs %}
+                    <div>
+                        <span style="opacity:.6;">
+                            [{{ l.created_at.strftime('%H:%M:%S') }}]</span>
+                        <span>[{{ l.number }}]</span>
+                        <span>{{ l.message }}</span>
+                    </div>
+                {% endfor %}
+            </div>
+
             {% if jobs %}
-                <h4 style="margin-top:10px;">Задачи</h4>
+                <h4 style="margin-top:16px;">Логи автологинов (задачи)</h4>
                 <table style="margin-top:4px;" class="table">
                     <tr>
                         <th>ID</th>
@@ -220,21 +237,6 @@
                     {% endfor %}
                 </table>
             {% endif %}
-
-            <h4 style="margin-top:16px;">Вывод бота</h4>
-            <div id="logs-container"
-                 style="max-height:260px; overflow-y:auto; padding:8px 10px;
-                        background: rgba(0,0,0,0.4); border-radius:10px;
-                        font-family: monospace; font-size:12px;">
-                {% for l in logs %}
-                    <div>
-                        <span style="opacity:.6;">
-                            [{{ l.created_at.strftime('%H:%M:%S') }}]</span>
-                        <span>[{{ l.number }}]</span>
-                        <span>{{ l.message }}</span>
-                    </div>
-                {% endfor %}
-            </div>
 
         {% endif %}
 
