@@ -265,8 +265,11 @@
 </div>
 
 <div class="page">
+    {# ОБЩИЙ ЛЕЙАУТ ДЛЯ ВСЕХ СТРАНИЦ (кроме логина) #}
+    {% block main %}
     <div class="container">
         <div class="card">
+            {% block flashes %}
             {% with messages = get_flashed_messages(with_categories=true) %}
               {% if messages %}
                 <div class="flash-stack">
@@ -278,10 +281,12 @@
                 </div>
               {% endif %}
             {% endwith %}
+            {% endblock %}
 
             {% block content %}{% endblock %}
         </div>
     </div>
+    {% endblock %}
 </div>
 </body>
 </html>
