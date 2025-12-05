@@ -69,6 +69,12 @@ class NumberRange(db.Model):
         lazy=True,
         cascade="all, delete-orphan",
     )
+    client_updates = db.relationship(
+        "ClientUpdate",
+        backref="range",
+        lazy=True,
+        cascade="all, delete-orphan",
+    )
 
 
 class AutoLoginJob(db.Model):
@@ -121,6 +127,16 @@ class AccountState(db.Model):
     # последний режим: True = WIN, False = LOOSE
     last_play_for_win = db.Column(db.Boolean)
 
+
+class ClientUpdate(db.Model):
+    """
+    Событие «обновить клиент Dota» для конкретной пятёрки диапазона.
+    Лидер (1 или 6) создаёт запись, остальные боты своей пятёрки читают.
+    """
+    id = db.Column(db.Integer, primary_key=True)
+    range_id = db.Column(db.Integer, db.ForeignKey("number_range.id"), nullable=False)
+    group_index = db.Column(db.Integer, nullable=False)  # 0, 1, 2... (каждая пятёрка)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
 # ====== ХЕЛПЕРЫ ======
@@ -688,7 +704,6 @@ def api_accounts_update():
     return jsonify({"ok": True})
 
 
-
 @app.route("/api/accounts/party")
 def api_accounts_party():
     number = request.args.get("number", type=int)
@@ -894,6 +909,110 @@ def api_accounts_lobby_reset():
 
     # никаких изменений в БД не делаем
     return jsonify({"ok": True})
+
+
+# ====== API ДЛЯ ОБНОВЛЕНИЯ КЛИЕНТА (client_igri) ======
+@app.route("/api/client_update/leader", methods=["POST"])
+def api_client_update_leader():
+    """
+    Лидер пятёрки сообщает, что увидел окно обновления клиента.
+    Сервер создаёт событие для всей пятёрки.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    number = data.get("number")
+
+    if number is None:
+        return jsonify({"ok": False, "error": "number required"}), 400
+
+    try:
+        number_int = int(number)
+    except Exception:
+        return jsonify({"ok": False, "error": "bad number"}), 400
+
+    rng = (
+        NumberRange.query
+        .filter(NumberRange.start <= number_int, NumberRange.end >= number_int)
+        .first()
+    )
+    if not rng:
+        return jsonify({"ok": False, "error": "range not found"}), 404
+
+    numbers = list(range(rng.start, rng.end + 1))
+    total = len(numbers)
+    if total <= 0:
+        return jsonify({"ok": False, "error": "empty range"}), 400
+
+    rel = number_int - rng.start
+    if rel < 0 or rel >= total:
+        return jsonify({"ok": False, "error": "number not in range"}), 400
+
+    # каждые 5 номеров — отдельная пятёрка
+    group_index = rel // 5
+
+    row = ClientUpdate(
+        range_id=rng.id,
+        group_index=group_index,
+        created_at=datetime.utcnow(),
+    )
+    db.session.add(row)
+    db.session.commit()
+
+    return jsonify({
+        "ok": True,
+        "id": row.id,
+        "group_index": group_index,
+    })
+
+
+@app.route("/api/client_update/check")
+def api_client_update_check():
+    """
+    GET /api/client_update/check?number=51
+
+    Возвращает последнее событие обновления клиента для пятёрки,
+    в которой находится указанный number.
+
+    Ответ:
+      { "ok": true, "id": <int> | null, "group_index": <int> | null, "created_at": <str> }
+    """
+    number = request.args.get("number", type=int)
+    if number is None:
+        return jsonify({"ok": False, "error": "number required"}), 400
+
+    rng = (
+        NumberRange.query
+        .filter(NumberRange.start <= number, NumberRange.end >= number)
+        .first()
+    )
+    if not rng:
+        return jsonify({"ok": False, "error": "range not found"}), 404
+
+    numbers = list(range(rng.start, rng.end + 1))
+    total = len(numbers)
+    if total <= 0:
+        return jsonify({"ok": True, "id": None, "group_index": None})
+
+    rel = number - rng.start
+    if rel < 0 or rel >= total:
+        return jsonify({"ok": False, "error": "number not in range"}), 400
+
+    group_index = rel // 5
+
+    row = (
+        ClientUpdate.query
+        .filter_by(range_id=rng.id, group_index=group_index)
+        .order_by(ClientUpdate.id.desc())
+        .first()
+    )
+    if not row:
+        return jsonify({"ok": True, "id": None, "group_index": group_index})
+
+    return jsonify({
+        "ok": True,
+        "id": row.id,
+        "group_index": row.group_index,
+        "created_at": row.created_at.isoformat() + "Z",
+    })
 
 
 # ====== API ДЛЯ ИГРОВОЙ ЛОГИКИ (СТОРОНА, ПОЗИЦИИ, WIN/LOOSE) ======
