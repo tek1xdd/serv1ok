@@ -140,17 +140,20 @@ class ClientUpdate(db.Model):
 
 
 class ClientUpdateAck(db.Model):
-    """Отметка, что конкретный number уже выполнил событие ClientUpdate.id для своей пятёрки."""
-    id = db.Column(db.Integer, primary_key=True)
-    range_id = db.Column(db.Integer, db.ForeignKey("number_range.id"), nullable=False)
-    group_index = db.Column(db.Integer, nullable=False)
-    number = db.Column(db.Integer, nullable=False)
-    last_ack_id = db.Column(db.Integer, nullable=False, default=0)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow)
+    """
+    Подтверждение (ack) от конкретного номера, что он выполнил обновление клиента
+    по конкретному событию ClientUpdate.
 
+    Нужно, чтобы после перезапуска бот НЕ выполнял одно и то же обновление снова.
+    """
     __table_args__ = (
-        db.UniqueConstraint("range_id", "group_index", "number", name="uq_client_update_ack"),
+        db.UniqueConstraint("update_id", "number", name="uq_client_update_ack"),
     )
+
+    id = db.Column(db.Integer, primary_key=True)
+    update_id = db.Column(db.Integer, db.ForeignKey("client_update.id"), nullable=False)
+    number = db.Column(db.Integer, nullable=False)
+    ack_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
 # ====== ХЕЛПЕРЫ ======
@@ -925,12 +928,32 @@ def api_accounts_lobby_reset():
     return jsonify({"ok": True})
 
 
+
 # ====== API ДЛЯ ОБНОВЛЕНИЯ КЛИЕНТА (client_igri) ======
+
+def _client_update_group_numbers(rng: NumberRange, group_index: int) -> list[int]:
+    """Возвращает номера (в пределах диапазона) для конкретной пятёрки group_index."""
+    start_num = int(rng.start) + int(group_index) * 5
+    if start_num > int(rng.end):
+        return []
+    end_num = min(start_num + 4, int(rng.end))
+    return list(range(start_num, end_num + 1))
+
+
+def _client_update_is_done(update_row: ClientUpdate, group_numbers: list[int]) -> tuple[bool, set[int]]:
+    """(done, acked_numbers_set) для события update_row."""
+    acks = ClientUpdateAck.query.filter_by(update_id=update_row.id).all()
+    acked_numbers = {int(a.number) for a in acks if a.number is not None}
+    done = bool(group_numbers) and all(n in acked_numbers for n in group_numbers)
+    return done, acked_numbers
+
+
 @app.route("/api/client_update/leader", methods=["POST"])
 def api_client_update_leader():
     """
     Лидер пятёрки сообщает, что увидел окно обновления клиента.
-    Сервер создаёт событие для всей пятёрки.
+    Сервер создаёт событие для всей пятёрки (или возвращает уже существующее),
+    чтобы боты обновились РОВНО ОДИН раз на событие.
     """
     data = request.get_json(force=True, silent=True) or {}
     number = data.get("number")
@@ -951,22 +974,66 @@ def api_client_update_leader():
     if not rng:
         return jsonify({"ok": False, "error": "range not found"}), 404
 
-    numbers = list(range(rng.start, rng.end + 1))
-    total = len(numbers)
+    total = int(rng.end) - int(rng.start) + 1
     if total <= 0:
         return jsonify({"ok": False, "error": "empty range"}), 400
 
-    rel = number_int - rng.start
+    rel = number_int - int(rng.start)
     if rel < 0 or rel >= total:
         return jsonify({"ok": False, "error": "number not in range"}), 400
 
-    # каждые 5 номеров — отдельная пятёрка
     group_index = rel // 5
+    group_numbers = _client_update_group_numbers(rng, group_index)
 
+    # --- Анти-спам / дедупликация ---
+    # Если уже есть "активное" событие (не все отписались ack), возвращаем его, чтобы не плодить 100 событий.
+    # Если событие зависло очень давно (STALE_SECONDS) — разрешаем создать новое.
+    STALE_SECONDS = 6 * 3600  # 6 часов
+    DONE_DEBOUNCE_SECONDS = 120  # 2 минуты (защита от двойного клика/фолс-позитива)
+
+    now = datetime.utcnow()
+
+    last_row = (
+        ClientUpdate.query
+        .filter_by(range_id=rng.id, group_index=group_index)
+        .order_by(ClientUpdate.id.desc())
+        .first()
+    )
+    if last_row:
+        done, _acked = _client_update_is_done(last_row, group_numbers)
+        age = None
+        try:
+            if last_row.created_at:
+                age = (now - last_row.created_at).total_seconds()
+        except Exception:
+            age = None
+
+        if not done:
+            # Если ещё не все ack — считаем событие активным и возвращаем его (пока не устарело)
+            if age is None or age < STALE_SECONDS:
+                return jsonify({
+                    "ok": True,
+                    "id": last_row.id,
+                    "group_index": group_index,
+                    "reused": True,
+                    "done": False,
+                })
+
+        # Если done, но лидер "дёрнул" ручку повторно сразу — тоже вернём прошлое, чтобы не пересоздавать
+        if done and age is not None and age < DONE_DEBOUNCE_SECONDS:
+            return jsonify({
+                "ok": True,
+                "id": last_row.id,
+                "group_index": group_index,
+                "reused": True,
+                "done": True,
+            })
+
+    # Создаём новое событие
     row = ClientUpdate(
         range_id=rng.id,
         group_index=group_index,
-        created_at=datetime.utcnow(),
+        created_at=now,
     )
     db.session.add(row)
     db.session.commit()
@@ -975,6 +1042,9 @@ def api_client_update_leader():
         "ok": True,
         "id": row.id,
         "group_index": group_index,
+        "reused": False,
+        "done": False,
+        "created_at": row.created_at.isoformat() + "Z",
     })
 
 
@@ -983,11 +1053,11 @@ def api_client_update_check():
     """
     GET /api/client_update/check?number=51
 
-    Возвращает последнее событие обновления клиента для пятёрки,
-    в которой находится указанный number.
+    Возвращает ПОСЛЕДНЕЕ событие обновления клиента для пятёрки,
+    НО только если данный number ещё НЕ подтвердил (ack) это событие.
 
     Ответ:
-      { "ok": true, "id": <int> | null, "group_index": <int> | null, "created_at": <str> }
+      { "ok": true, "id": <int> | null, "group_index": <int> | null, "created_at": <str> | null }
     """
     number = request.args.get("number", type=int)
     if number is None:
@@ -1001,16 +1071,16 @@ def api_client_update_check():
     if not rng:
         return jsonify({"ok": False, "error": "range not found"}), 404
 
-    numbers = list(range(rng.start, rng.end + 1))
-    total = len(numbers)
+    total = int(rng.end) - int(rng.start) + 1
     if total <= 0:
         return jsonify({"ok": True, "id": None, "group_index": None})
 
-    rel = number - rng.start
+    rel = int(number) - int(rng.start)
     if rel < 0 or rel >= total:
         return jsonify({"ok": False, "error": "number not in range"}), 400
 
     group_index = rel // 5
+    group_numbers = _client_update_group_numbers(rng, group_index)
 
     row = (
         ClientUpdate.query
@@ -1021,80 +1091,96 @@ def api_client_update_check():
     if not row:
         return jsonify({"ok": True, "id": None, "group_index": group_index})
 
-        # Если этот бот уже подтвердил (ACK) событие — больше его не отдаём
-    ack = (
-        ClientUpdateAck.query
-        .filter_by(range_id=rng.id, group_index=group_index, number=number)
-        .first()
-    )
-    last_done = int(ack.last_ack_id) if ack and ack.last_ack_id else 0
-    if int(row.id) <= last_done:
-        return jsonify({"ok": True, "id": None, "group_index": group_index})
+    done, acked_numbers = _client_update_is_done(row, group_numbers)
+
+    # если событие уже закрыто (все ack), или этот бот уже ack — ничего не возвращаем
+    if done or int(number) in acked_numbers:
+        return jsonify({
+            "ok": True,
+            "id": None,
+            "group_index": group_index,
+            "created_at": None,
+            "done": bool(done),
+            "acked": len(acked_numbers),
+            "total": len(group_numbers),
+        })
 
     return jsonify({
         "ok": True,
         "id": row.id,
         "group_index": row.group_index,
         "created_at": row.created_at.isoformat() + "Z",
+        "done": bool(done),
+        "acked": len(acked_numbers),
+        "total": len(group_numbers),
     })
-
-
 
 
 @app.route("/api/client_update/ack", methods=["POST"])
 def api_client_update_ack():
-    """Клиент подтверждает, что обновился по событию ClientUpdate.id (защита от повторов после перезапуска)."""
+    """
+    POST /api/client_update/ack
+    payload: { "number": 52, "id": 123 }
+
+    Записывает подтверждение, что бот number уже отработал обновление по событию id.
+    """
     data = request.get_json(force=True, silent=True) or {}
     number = data.get("number")
-    event_id = data.get("id")
+    update_id = data.get("id") or data.get("update_id")
 
-    if number is None or event_id is None:
+    if number is None or update_id is None:
         return jsonify({"ok": False, "error": "number and id required"}), 400
 
     try:
         number_int = int(number)
-        event_id_int = int(event_id)
+        update_id_int = int(update_id)
     except Exception:
         return jsonify({"ok": False, "error": "bad number/id"}), 400
 
-    rng = (
-        NumberRange.query
-        .filter(NumberRange.start <= number_int, NumberRange.end >= number_int)
-        .first()
-    )
+    update_row = ClientUpdate.query.get(update_id_int)
+    if not update_row:
+        return jsonify({"ok": False, "error": "update event not found"}), 404
+
+    rng = NumberRange.query.get(update_row.range_id)
     if not rng:
         return jsonify({"ok": False, "error": "range not found"}), 404
 
-    total = (rng.end - rng.start + 1)
+    total = int(rng.end) - int(rng.start) + 1
     if total <= 0:
         return jsonify({"ok": False, "error": "empty range"}), 400
 
-    rel = number_int - rng.start
+    rel = number_int - int(rng.start)
     if rel < 0 or rel >= total:
         return jsonify({"ok": False, "error": "number not in range"}), 400
 
     group_index = rel // 5
+    if int(group_index) != int(update_row.group_index):
+        return jsonify({"ok": False, "error": "wrong group"}), 400
 
-    row = (
-        ClientUpdateAck.query
-        .filter_by(range_id=rng.id, group_index=group_index, number=number_int)
-        .first()
-    )
-    if not row:
-        row = ClientUpdateAck(
-            range_id=rng.id,
-            group_index=group_index,
+    group_numbers = _client_update_group_numbers(rng, group_index)
+
+    # пишем ack один раз
+    exists = ClientUpdateAck.query.filter_by(update_id=update_row.id, number=number_int).first()
+    if not exists:
+        ack = ClientUpdateAck(
+            update_id=update_row.id,
             number=number_int,
-            last_ack_id=0,
-            updated_at=datetime.utcnow(),
+            ack_at=datetime.utcnow(),
         )
-        db.session.add(row)
+        db.session.add(ack)
+        db.session.commit()
 
-    row.last_ack_id = max(int(row.last_ack_id or 0), event_id_int)
-    row.updated_at = datetime.utcnow()
-    db.session.commit()
+    done, acked_numbers = _client_update_is_done(update_row, group_numbers)
 
-    return jsonify({"ok": True, "group_index": group_index, "last_ack_id": row.last_ack_id})
+    return jsonify({
+        "ok": True,
+        "id": update_row.id,
+        "group_index": update_row.group_index,
+        "done": bool(done),
+        "acked": len(acked_numbers),
+        "total": len(group_numbers),
+    })
+
 # ====== API ДЛЯ ИГРОВОЙ ЛОГИКИ (СТОРОНА, ПОЗИЦИИ, WIN/LOOSE) ======
 @app.route("/api/game/config", methods=["POST"])
 def api_game_config():
