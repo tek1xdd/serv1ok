@@ -1,4 +1,3 @@
-# server.py
 # -*- coding: utf-8 -*-
 from functools import wraps
 from datetime import datetime, timedelta
