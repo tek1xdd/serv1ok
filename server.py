@@ -917,18 +917,19 @@ def api_accounts_lobby_state():
     Ответ:
       { "ok": true, "mode": "same"|"different"|"waiting", "lobby_id": "..."|null }
 
-    Логика:
-      - как только появляется новый lobby_id в диапазоне, даём ~6 секунд,
-        чтобы остальные успели его отправить → в это время всегда "waiting"
-      - после окна:
-          * если есть хотя бы один ДРУГОЙ lobby_id → "different"
-          * если нет других, но не у всех номеров есть lobby_id → "different"
-          * если у всех номеров lobby_id == мой → "same"
+    Что было не так раньше:
+      - ожидание WAIT_SECONDS считалось ОТ МОЕГО lobby_id;
+      - у тех, кто ещё не успел отправить новый lobby_id, "мой lobby_id" был старый,
+        окно ожидания уже давно прошло -> сервер почти сразу отдавал "different".
 
-    ВАЖНО:
-      Тут мы читаем lobby_id из LobbyState (отдельная таблица), чтобы:
-        - не зависеть от AccountState.last_update (его трогают разные эндпоинты),
-        - не ловить рандом из-за нескольких строк AccountState на один номер.
+    Что делаем теперь (без всяких CHANGE_WINDOW_SECONDS):
+      - смотрим ПО ВСЕМУ диапазону, какой lobby_id был изменён ПОСЛЕДНИМ (max(lobby_seen_at));
+      - берём его как "текущую волну" (wave_lobby_id);
+      - после ПЕРВОГО появления этого wave_lobby_id в диапазоне даём WAIT_SECONDS,
+        чтобы остальные боты успели отправить свой lobby_id;
+      - только после этого начинаем возвращать same/different.
+
+    Это ровно то, что тебе нужно: после первого lobby_id — пауза, и только потом решение.
     """
     number = request.args.get("number", type=int)
     if number is None:
@@ -943,10 +944,9 @@ def api_accounts_lobby_state():
         return jsonify({"ok": False, "error": "range not found"}), 404
 
     now = datetime.utcnow()
-    WAIT_SECONDS = 6
+    WAIT_SECONDS = 8  # можешь менять (6..10). 8 похоже на то, как было в самом первом варианте
 
     # Через какое время считать данные "протухшими" (бот упал/не шлёт lobby_id)
-    # Нужно, чтобы старый lobby_id с упавшей виртуалки не ломал всем mode.
     TTL_SECONDS = 15 * 60  # 15 минут
     cutoff = now - timedelta(seconds=TTL_SECONDS)
 
@@ -961,32 +961,45 @@ def api_accounts_lobby_state():
 
     my_lobby = my_state.lobby_id
 
-    # --- 1) Когда в диапазоне впервые появился ЭТОТ lobby_id? ---
-    rows_same = (
+    numbers = list(range(rng.start, rng.end + 1))
+
+    # --- 1) Определяем последнюю "волну" lobby_id в диапазоне ---
+    change_rows = (
         LobbyState.query
         .filter(
             LobbyState.range_id == rng.id,
-            LobbyState.lobby_id == my_lobby,
+            LobbyState.number.in_(numbers),
             LobbyState.updated_at >= cutoff,
+            LobbyState.lobby_id.isnot(None),
+            LobbyState.lobby_seen_at.isnot(None),
         )
         .all()
     )
 
-    first_time = None
-    for r in rows_same:
-        if r.lobby_seen_at:
-            if first_time is None or r.lobby_seen_at < first_time:
-                first_time = r.lobby_seen_at
+    if change_rows:
+        newest = None
+        for r in change_rows:
+            if not r.lobby_seen_at:
+                continue
+            if newest is None or r.lobby_seen_at > newest.lobby_seen_at:
+                newest = r
 
-    # если lobby_id появился меньше WAIT_SECONDS назад — ещё ждём
-    if first_time:
-        age = (now - first_time).total_seconds()
-        if age < WAIT_SECONDS:
-            return jsonify({"ok": True, "mode": "waiting", "lobby_id": my_lobby})
+        if newest and newest.lobby_id:
+            wave_lobby = newest.lobby_id
+
+            # время первого появления wave_lobby в диапазоне
+            wave_first = None
+            for r in change_rows:
+                if r.lobby_id == wave_lobby and r.lobby_seen_at:
+                    if wave_first is None or r.lobby_seen_at < wave_first:
+                        wave_first = r.lobby_seen_at
+
+            if wave_first:
+                age = (now - wave_first).total_seconds()
+                if age < WAIT_SECONDS:
+                    return jsonify({"ok": True, "mode": "waiting", "lobby_id": wave_lobby})
 
     # --- 2) Окно прошло — сверяем по всему диапазону ---
-    numbers = list(range(rng.start, rng.end + 1))
-
     rows = (
         LobbyState.query
         .filter(
@@ -1008,8 +1021,9 @@ def api_accounts_lobby_state():
     if len(latest_per_number) < len(numbers):
         return jsonify({"ok": True, "mode": "different", "lobby_id": my_lobby})
 
-    # 3) Иначе: каждый номер имеет lobby_id == my_lobby → same
+    # 3) Иначе: каждый номер имеет lobby_id == мой → same
     return jsonify({"ok": True, "mode": "same", "lobby_id": my_lobby})
+
 @app.route("/api/accounts/lobby_reset", methods=["POST"])
 def api_accounts_lobby_reset():
     """
