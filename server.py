@@ -33,13 +33,6 @@ from sqlalchemy import and_, inspect, or_, text
 from werkzeug.security import check_password_hash, generate_password_hash
 
 
-# ---------------------------------------------------------------------------
-# Force-sync laning groups (сервер диктует текущую группу)
-# ---------------------------------------------------------------------------
-LANING_GROUPS_COUNT = 19
-FORCE_GROUP_SECONDS = 75.0  # сек на одну группу (0..18), затем stage=final
-
-
 _GAME_POSITIONS = {}
 
 def _get_game_bucket(range_id: int, game_index: int) -> dict:
@@ -272,24 +265,6 @@ class GameFinishMark(db.Model):
     range_id = db.Column(db.Integer, db.ForeignKey("number_range.id"), nullable=False)
     number = db.Column(db.Integer, nullable=False)
     last_finished_at = db.Column(db.DateTime, default=datetime.utcnow)
-    # Идемпотентность по номеру матча (game_index = games_completed на старте матча)
-    last_game_index = db.Column(db.Integer)
-
-
-class LaningSchedule(db.Model):
-    """Сервер-авторитет: старт времени для force-sync групп лайнинга.
-
-    Ключ: (range_id, game_index). started_at фиксируется один раз на матч.
-    Текущая группа вычисляется по elapsed // FORCE_GROUP_SECONDS.
-    """
-    __table_args__ = (
-        db.UniqueConstraint("range_id", "game_index", name="uq_laning_schedule_range_game"),
-    )
-
-    id = db.Column(db.Integer, primary_key=True)
-    range_id = db.Column(db.Integer, db.ForeignKey("number_range.id"), nullable=False)
-    game_index = db.Column(db.Integer, nullable=False)
-    started_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
 class ClientUpdate(db.Model):
@@ -367,15 +342,6 @@ def ensure_schema() -> None:
                 with db.engine.begin() as conn:
                     conn.execute(text("ALTER TABLE user ADD COLUMN is_super_admin BOOLEAN DEFAULT 0"))
                     conn.execute(text("UPDATE user SET is_super_admin = 0 WHERE is_super_admin IS NULL"))
-    
-
-            # Миграция: добавить last_game_index в game_finish_mark
-            if "game_finish_mark" in insp.get_table_names():
-                cols_gfm = {c.get("name") for c in insp.get_columns("game_finish_mark")}
-                if "last_game_index" not in cols_gfm:
-                    with db.engine.begin() as conn:
-                        conn.execute(text("ALTER TABLE game_finish_mark ADD COLUMN last_game_index INTEGER"))
-                        conn.execute(text("UPDATE game_finish_mark SET last_game_index = NULL WHERE last_game_index IS NULL"))
     except Exception:
         # если что-то пошло не так (нестандартная БД) — не валим весь сервер
         pass
@@ -1126,31 +1092,15 @@ def user_range_game_settings(range_id):
             target_id=rng.id,
             details=f"win_group={win_group}",
         )
+        db.session.commit()
+        flash("Режим победа/поражение обновлён.", "success")
+        return redirect(url_for("user_range", range_id=rng.id, tab="settings"))
+
     elif action == "reset_games":
         rng.games_completed = 0
         rows = AccountState.query.filter_by(range_id=rng.id).all()
         for r in rows:
             r.games_played = 0
-        # IMPORTANT: при reset нужно сбросить дедуп-метки finish,
-        # иначе после сброса games_completed=0 сервер будет считать новые finish
-        # "старыми" (last_game_index останется от прошлой сессии) и win_group не будет переключаться.
-        try:
-            GameFinishMark.query.filter_by(range_id=rng.id).delete(synchronize_session=False)
-        except Exception:
-            pass
-        # Также можно почистить lobby_state, чтобы не тянуть старые lobby_id
-        try:
-            LobbyState.query.filter_by(range_id=rng.id).delete(synchronize_session=False)
-        except Exception:
-            pass
-        # и очистить in-memory buckets позиций для этого диапазона
-        try:
-            rid = int(rng.id)
-            for key in list(_GAME_POSITIONS.keys()):
-                if key and int(key[0]) == rid:
-                    _GAME_POSITIONS.pop(key, None)
-        except Exception:
-            pass
         audit(
             "range_reset_games",
             actor=user,
@@ -1551,9 +1501,9 @@ def api_accounts_lobby_state():
 
     now = datetime.utcnow()
 
-    WAIT_SECONDS = 9
+    WAIT_SECONDS = 1
     # небольшой буфер, если кто-то очень медленно присылает lobby_id (но accept-окно ещё живо)
-    EXTRA_WAIT_SECONDS = 3
+    EXTRA_WAIT_SECONDS = 2
 
     # Через какое время считать данные "протухшими" (бот упал/не шлёт lobby_id)
     TTL_SECONDS = 15 * 60  # 15 минут
@@ -1592,9 +1542,6 @@ def api_accounts_lobby_state():
         first_time = my_state.lobby_seen_at or my_state.updated_at or now
 
     age = (now - first_time).total_seconds()
-    if age < WAIT_SECONDS:
-        return jsonify({"ok": True, "mode": "waiting", "lobby_id": my_lobby})
-
     # --- 2) Окно прошло — сверяем по всему диапазону ---
     numbers = list(range(int(rng.start), int(rng.end) + 1))
     total = len(numbers)
@@ -1966,15 +1913,6 @@ def api_game_config():
 
     # выдаём позицию 1..5 по стороне для текущей игры
     game_index = int(rng.games_completed or 0)
-
-    # ensure laning schedule for force-sync групп (фиксируем started_at на матч)
-    try:
-        sched = LaningSchedule.query.filter_by(range_id=rng.id, game_index=game_index).first()
-        if not sched:
-            db.session.add(LaningSchedule(range_id=rng.id, game_index=game_index, started_at=datetime.utcnow()))
-    except Exception:
-        pass
-
     bucket = _get_game_bucket(rng.id, game_index)
     position = _assign_position(bucket, number_int, side)
     _cleanup_old_game_buckets(rng.id)
@@ -2020,60 +1958,11 @@ def api_game_config():
     })
 
 
-@app.route("/api/laning/status", methods=["POST"])
-def api_laning_status():
-    """Возвращает текущую группу, которую СЕЙЧАС должны выполнять все номера диапазона.
-
-    Force-sync: сервер двигает группы по таймеру. Если клиент не успел — он просто прыгает.
-    """
-    data = request.get_json(force=True, silent=True) or {}
-    number = data.get("number")
-    game_index = data.get("game_index")
-    if number is None:
-        return jsonify({"ok": False, "error": "number required"}), 400
-    try:
-        number_int = int(number)
-    except Exception:
-        return jsonify({"ok": False, "error": "bad number"}), 400
-    rng = (NumberRange.query.filter(NumberRange.start <= number_int, NumberRange.end >= number_int).first())
-    if not rng:
-        return jsonify({"ok": False, "error": "range not found"}), 404
-    try:
-        gi = int(game_index) if game_index is not None else int(rng.games_completed or 0)
-    except Exception:
-        gi = int(rng.games_completed or 0)
-    now = datetime.utcnow()
-    sched = LaningSchedule.query.filter_by(range_id=rng.id, game_index=gi).first()
-    if not sched:
-        sched = LaningSchedule(range_id=rng.id, game_index=gi, started_at=now)
-        db.session.add(sched)
-        db.session.commit()
-    elapsed = (now - (sched.started_at or now)).total_seconds()
-    if elapsed < 0:
-        elapsed = 0.0
-    raw_group = int(elapsed // float(FORCE_GROUP_SECONDS))
-    stage = "laning" if raw_group < int(LANING_GROUPS_COUNT) else "final"
-    seconds_into = elapsed - (raw_group * float(FORCE_GROUP_SECONDS))
-    seconds_left = max(0.0, float(FORCE_GROUP_SECONDS) - seconds_into) if stage == "laning" else 0.0
-    return jsonify({
-        "ok": True,
-        "range_id": int(rng.id),
-        "game_index": int(gi),
-        "stage": stage,
-        "group_index": int(raw_group),
-        "group_number": int(raw_group) + 1,
-        "groups_total": int(LANING_GROUPS_COUNT),
-        "seconds_left": float(seconds_left),
-        "started_at": (sched.started_at.isoformat() if sched.started_at else None),
-    })
-
-
 @app.route("/api/game/finished", methods=["POST"])
 
 def api_game_finished():
     data = request.get_json(force=True, silent=True) or {}
     number = data.get("number")
-    game_index = data.get("game_index")
 
     if number is None:
         return jsonify({"ok": False, "error": "number required"}), 400
@@ -2082,13 +1971,6 @@ def api_game_finished():
         number_int = int(number)
     except Exception:
         return jsonify({"ok": False, "error": "bad number"}), 400
-
-    gi_int = None
-    if game_index is not None:
-        try:
-            gi_int = int(game_index)
-        except Exception:
-            gi_int = None
 
     rng = (
         NumberRange.query
@@ -2101,26 +1983,11 @@ def api_game_finished():
     now = datetime.utcnow()
 
     # ---------------- Дедупликация ----------------
-    # 1) Идемпотентность по game_index (если клиент его прислал)
-    mark = GameFinishMark.query.filter_by(range_id=rng.id, number=number_int).first()
-    if mark and gi_int is not None and (mark.last_game_index is not None):
-        try:
-            if int(gi_int) <= int(mark.last_game_index):
-                mark.last_finished_at = now
-                db.session.commit()
-                return jsonify({
-                    "ok": True,
-                    "duplicate": True,
-                    "duplicate_reason": "game_index",
-                    "is_master": (number_int == rng.start),
-                    "games_completed": rng.games_completed,
-                    "win_group": rng.win_group,
-                })
-        except Exception:
-            pass
+    # Иногда клиенты могут отправить finish дважды (фолс-детект/два потока).
+    # Чтобы это не ломало games_played и не стопорило лидера — защищаемся на сервере.
+    DEDUP_SECONDS = 60  # достаточно, т.к. две реальные игры за минуту невозможны
 
-    # 2) Временная дедупликация (страховка от двойных потоков/кликов)
-    DEDUP_SECONDS = 60  # две реальные игры за минуту невозможны
+    mark = GameFinishMark.query.filter_by(range_id=rng.id, number=number_int).first()
     if mark and mark.last_finished_at:
         try:
             age = (now - mark.last_finished_at).total_seconds()
@@ -2147,20 +2014,14 @@ def api_game_finished():
             for r in rows:
                 r.last_update = now
 
+            # обновим метку тоже (чтобы если клиент зациклился — не начал инкрементить через минуту)
             mark.last_finished_at = now
-            if gi_int is not None:
-                try:
-                    if mark.last_game_index is None or int(gi_int) > int(mark.last_game_index):
-                        mark.last_game_index = int(gi_int)
-                except Exception:
-                    mark.last_game_index = int(gi_int)
 
             is_master = (number_int == rng.start)
             db.session.commit()
             return jsonify({
                 "ok": True,
                 "duplicate": True,
-                "duplicate_reason": "time",
                 "is_master": is_master,
                 "games_completed": rng.games_completed,
                 "win_group": rng.win_group,
@@ -2168,16 +2029,10 @@ def api_game_finished():
 
     # если метки нет — создадим, если есть — обновим
     if not mark:
-        mark = GameFinishMark(range_id=rng.id, number=number_int, last_finished_at=now, last_game_index=gi_int)
+        mark = GameFinishMark(range_id=rng.id, number=number_int, last_finished_at=now)
         db.session.add(mark)
     else:
         mark.last_finished_at = now
-        if gi_int is not None:
-            try:
-                if mark.last_game_index is None or int(gi_int) > int(mark.last_game_index):
-                    mark.last_game_index = int(gi_int)
-            except Exception:
-                mark.last_game_index = int(gi_int)
 
     # ---------------- Основная логика ----------------
     rows = (
@@ -2196,32 +2051,23 @@ def api_game_finished():
         rows = [row]
 
     for r in rows:
-        if gi_int is not None:
-            # game_index 0-based -> games_played 1-based
-            desired = int(gi_int) + 1
-            if (r.games_played or 0) < desired:
-                r.games_played = desired
-        else:
-            r.games_played = (r.games_played or 0) + 1
+        r.games_played = (r.games_played or 0) + 1
         r.last_update = now
 
-    # мастер — первый номер диапазона; только он переключает WIN/LOOSE и увеличивает games_completed
+    # мастер — первый номер диапазона; только он переключает WIN/LOOSE
     is_master = (number_int == rng.start)
-    if is_master and (gi_int is None or int(gi_int) == int(rng.games_completed or 0)):
+    if is_master:
         rng.games_completed = (rng.games_completed or 0) + 1
         win_group = rng.win_group or "right"
         rng.win_group = "left" if win_group == "right" else "right"
 
-        # выравниваем games_played по всему диапазону, чтобы на панели не было 7/8/7
-        try:
-            all_rows = AccountState.query.filter_by(range_id=rng.id).all()
-            for rr in all_rows:
-                if (rr.games_played or 0) < int(rng.games_completed or 0):
-                    rr.games_played = int(rng.games_completed or 0)
-        except Exception:
-            pass
+        # очистим bucket позиций для завершённой игры
+        finished_game_index = int(rng.games_completed or 0) - 1
+        _GAME_POSITIONS.pop((int(rng.id), int(finished_game_index)), None)
+        _cleanup_old_game_buckets(rng.id)
 
     db.session.commit()
+
     return jsonify({
         "ok": True,
         "duplicate": False,
@@ -2229,6 +2075,7 @@ def api_game_finished():
         "games_completed": rng.games_completed,
         "win_group": rng.win_group,
     })
+
 
 @app.route("/api/game/party_ready", methods=["GET"])
 def api_game_party_ready():
