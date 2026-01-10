@@ -1126,31 +1126,29 @@ def user_range_game_settings(range_id):
             target_id=rng.id,
             details=f"win_group={win_group}",
         )
-        db.session.commit()
-        flash("Режим победа/поражение обновлён.", "success")
-        return redirect(url_for("user_range", range_id=rng.id, tab="settings"))
-
     elif action == "reset_games":
         rng.games_completed = 0
         rows = AccountState.query.filter_by(range_id=rng.id).all()
         for r in rows:
             r.games_played = 0
-        
-        # сброс дедуп-меток finish (иначе первый finish после reset может быть принят как duplicate)
+        # IMPORTANT: при reset нужно сбросить дедуп-метки finish,
+        # иначе после сброса games_completed=0 сервер будет считать новые finish
+        # "старыми" (last_game_index останется от прошлой сессии) и win_group не будет переключаться.
         try:
-            GameFinishMark.query.filter_by(range_id=rng.id).delete()
+            GameFinishMark.query.filter_by(range_id=rng.id).delete(synchronize_session=False)
         except Exception:
             pass
-        # сброс расписания групп лайнинга (force-sync)
+        # Также можно почистить lobby_state, чтобы не тянуть старые lobby_id
         try:
-            LaningSchedule.query.filter_by(range_id=rng.id).delete()
+            LobbyState.query.filter_by(range_id=rng.id).delete(synchronize_session=False)
         except Exception:
             pass
-        # очистим in-memory bucket позиций для этого диапазона
+        # и очистить in-memory buckets позиций для этого диапазона
         try:
-            keys_to_del = [k for k in _GAME_POSITIONS.keys() if int(k[0]) == int(rng.id)]
-            for k in keys_to_del:
-                _GAME_POSITIONS.pop(k, None)
+            rid = int(rng.id)
+            for key in list(_GAME_POSITIONS.keys()):
+                if key and int(key[0]) == rid:
+                    _GAME_POSITIONS.pop(key, None)
         except Exception:
             pass
         audit(
